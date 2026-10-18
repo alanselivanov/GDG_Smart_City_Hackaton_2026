@@ -47,42 +47,42 @@ CATEGORY_LABELS = {
 ACTIVITIES = {
     "ru": {"cafe": "Зайдите за напитком и отдохните.", "food": "Выберите блюдо и сделайте остановку на обед или ужин.",
            "nightlife": "Посмотрите меню и проведите здесь часть вечера.", "culture": "Посмотрите текущую программу на сайте места перед визитом.",
-           "museum": "Осмотрите основную экспозицию; наличие интерактивов уточните заранее.",
+           "museum": "Уточните актуальные экспозиции и посетите музей.",
            "landmark": "Осмотрите место снаружи и сделайте фото.", "viewpoint": "Оцените вид и сделайте фото.",
-           "park": "Пройдитесь по дорожкам парка.", "family": "Проведите время на площадке с детьми.",
+           "park": "Прогуляйтесь в парке.", "family": "Проведите время на площадке с детьми.",
            "activity": "Уточните условия посещения и попробуйте доступную активность.",
            "shopping": "Пройдитесь по торговым рядам."},
     "en": {"cafe": "Stop for a drink and a break.", "food": "Choose a meal and take a lunch or dinner break.",
            "nightlife": "Check the menu and spend part of your evening here.", "culture": "Check the venue's current programme before visiting.",
-           "museum": "Explore the main exhibits; check interactive options in advance.",
+           "museum": "Check current exhibitions and visit the museum.",
            "landmark": "See the site from outside and take a photo.", "viewpoint": "Enjoy the view and take a photo.",
-           "park": "Walk along the park paths.", "family": "Spend some time at the playground with children.",
+           "park": "Take a walk in the park.", "family": "Spend some time at the playground with children.",
            "activity": "Check admission details and try an available activity.",
            "shopping": "Browse the shops."},
     "kk": {"cafe": "Сусын алып, демалыңыз.", "food": "Тағам таңдап, түскі не кешкі асқа тоқтаңыз.",
            "nightlife": "Мәзірді қарап, кештің бір бөлігін осында өткізіңіз.",
            "culture": "Барар алдында мекеменің қазіргі бағдарламасын тексеріңіз.",
-           "museum": "Негізгі экспозицияны көріңіз; интерактивті бөлімдерді алдын ала нақтылаңыз.",
+           "museum": "Қазіргі көрмелерді нақтылап, мұражайға барыңыз.",
            "landmark": "Орынды сыртынан көріп, суретке түсіріңіз.",
            "viewpoint": "Көріністі тамашалап, суретке түсіріңіз.",
-           "park": "Саябақ жолдарымен серуендеңіз.",
+           "park": "Саябақта серуендеңіз.",
            "family": "Балалармен ойын алаңында уақыт өткізіңіз.",
            "activity": "Кіру шарттарын нақтылап, қолжетімді белсенділікті байқап көріңіз.",
            "shopping": "Дүкендерді аралаңыз."},
 }
 NOTICES = {
     "ru": {"unknown_hours": "Часы работы части мест неизвестны или имеют сложный формат; проверьте перед визитом.",
-           "walking": "Расстояние указано по прямой; время пешком оценено с поправкой на обходы и может отличаться от реального маршрута.",
+           "walking": "Путь и время рассчитаны по пешеходной сети OSM; фактическое время зависит от темпа и условий на месте.",
            "quiet": "Уровень шума не подтверждён данными OSM.",
            "socket": "Наличие розеток часто не указано в OSM; уточните перед визитом.",
            "empty": "Подходящих подтверждённых мест не найдено. Увеличьте время или измените фильтры."},
     "en": {"unknown_hours": "Some hours are missing or complex; check before visiting.",
-           "walking": "Distance is straight-line; walking time includes a detour allowance and may differ from the actual route.",
+           "walking": "Distance and time use the OSM pedestrian network; actual time depends on pace and local conditions.",
            "quiet": "Noise level is not verified by OSM data.",
            "socket": "Power outlet data is often missing in OSM; check before visiting.",
            "empty": "No verified matching places were found. Increase the time or change filters."},
     "kk": {"unknown_hours": "Кейбір жұмыс уақыты белгісіз не күрделі; барар алдында тексеріңіз.",
-           "walking": "Қашықтық түзу сызықпен өлшенді; жүру уақыты айналма жолды ескереді, нақты жол өзгеше болуы мүмкін.",
+           "walking": "Қашықтық пен уақыт OSM жаяу жүру желісі бойынша есептелді; нақты уақыт жүру қарқыны мен жағдайға байланысты.",
            "quiet": "Орынның тыныштығы OSM деректерімен расталмаған.",
            "socket": "OSM-де розетка туралы дерек жиі жоқ; барар алдында нақтылаңыз.",
            "empty": "Сәйкес расталған орын табылмады. Уақытты ұзартыңыз не сүзгілерді өзгертіңіз."},
@@ -175,23 +175,38 @@ def localized_description(poi: dict, language: str) -> str | None:
     return poi["tags"].get(f"description:{language}") or (poi["description"] if language == "ru" else None)
 
 
-def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) -> tuple[list[Recommendation], list[str], datetime]:
+def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
+                   semantic_scores: dict[str, float], limit: int = 40) -> list[dict]:
+    participants = request.participants if isinstance(request, GroupRecommendRequest) else [request]
+    max_travel = request.max_travel_minutes or min(35, max(10, request.time_budget_minutes // 3))
+    desired, _, _ = _preferences(request.query)
+    candidates = []
+    for poi in pois:
+        category = poi["category"]
+        if request.categories and category not in request.categories:
+            continue
+        if category in request.exclude_categories:
+            continue
+        direct = max(distance_m(person.lat, person.lon, poi["lat"], poi["lon"])
+                     for person in participants)
+        if direct > max_travel * 125:
+            continue
+        interests = sum(not person.interests or category in person.interests for person in participants) / len(participants)
+        score = 12 * semantic_scores.get(poi["id"], 0) + 3 * (category in desired) + interests
+        score -= direct / 1200
+        candidates.append((score, direct, poi))
+    candidates.sort(key=lambda row: (-row[0], row[1], row[2]["id"]))
+    return [poi for _, _, poi in candidates[:limit]]
+
+
+def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
+         routes: dict[str, list[tuple[int, int] | None]],
+         semantic_scores: dict[str, float] | None = None) -> tuple[list[Recommendation], list[str], datetime]:
     language = request.language
     start = (request.starts_at or datetime.now(ASTANA_TZ)).astimezone(ASTANA_TZ)
     max_travel = request.max_travel_minutes or min(35, max(10, request.time_budget_minutes // 3))
     desired, wants_socket, wants_quiet = _preferences(request.query)
     near_flight = any(term in request.query.casefold() for term in FLIGHT_TERMS)
-    acceptable = set(desired)
-    if "park" in desired:
-        acceptable.update({"landmark", "viewpoint"})
-    if "family" in desired:
-        acceptable.update({"park", "museum", "culture"})
-    if "landmark" in desired:
-        acceptable.update({"museum", "culture", "viewpoint"})
-    if "nightlife" in desired:
-        acceptable.update({"food", "cafe"})
-    if near_flight:
-        acceptable.update({"cafe", "food"})
     group = isinstance(request, GroupRecommendRequest)
     participants = request.participants if group else [request]
     scored: list[tuple[float, Recommendation]] = []
@@ -203,10 +218,12 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
             continue
         if category in request.exclude_categories:
             continue
-        if acceptable and category not in acceptable:
+        route_values = routes.get(poi["id"])
+        if not route_values or len(route_values) != len(participants) or any(value is None for value in route_values):
             continue
-        distances = [distance_m(person.lat, person.lon, poi["lat"], poi["lon"]) for person in participants]
-        walks = [walking_minutes(d) for d in distances]
+        distances = [value[0] for value in route_values if value is not None]
+        seconds = [value[1] for value in route_values if value is not None]
+        walks = [math.ceil(value / 60) for value in seconds]
         longest = max(walks)
         if longest > max_travel or longest + 15 > request.time_budget_minutes:
             continue
@@ -224,6 +241,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
         if group:
             score += 1.5 * min(matches)
         score += max(0.0, 2.5 - longest / 15)
+        if semantic_scores:
+            score += 10 * semantic_scores.get(poi["id"], 0)
         score += 0.7 if status == "open" else 0
         score += 0.2 if poi["description"] else 0
         if wants_socket and poi["tags"].get("socket:access") in {"yes", "customers"}:
@@ -232,7 +251,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
             score += 3
         label = CATEGORY_LABELS[language][category]
         if language == "ru":
-            why = f"Это {label} примерно в {round(max(distances))} м от места старта" + (" группы." if group else ".")
+            why = f"Это {label} в {round(max(distances))} м по пешеходному маршруту от места старта" + (" группы." if group else ".")
             if group and any(person.interests for person in participants):
                 why += f" Соответствует интересам {sum(matches)} из {len(matches)} участников."
             elif not group and request.interests and category in request.interests:
@@ -240,7 +259,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
             if poi["tags"].get("socket:access") in {"yes", "customers"}:
                 why += " Розетки указаны в OSM."
         elif language == "kk":
-            why = f"Бұл {label}; бастапқы орыннан шамамен {round(max(distances))} м" + (" (топ үшін)." if group else ".")
+            why = f"Бұл {label}; бастапқы орыннан жаяу жол бойынша {round(max(distances))} м" + (" (топ үшін)." if group else ".")
             if group and any(person.interests for person in participants):
                 why += f" {len(matches)} қатысушының {sum(matches)}-інің қызығушылығына сай."
             elif not group and request.interests and category in request.interests:
@@ -248,7 +267,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
             if poi["tags"].get("socket:access") in {"yes", "customers"}:
                 why += " Розетка OSM деректерінде көрсетілген."
         else:
-            why = f"This {label} is about {round(max(distances))} m from the starting point" + (" for the group." if group else ".")
+            why = f"This {label} is {round(max(distances))} m along a walking route from the starting point" + (" for the group." if group else ".")
             if group and any(person.interests for person in participants):
                 why += f" Matches the interests of {sum(matches)} of {len(matches)} participants."
             elif not group and request.interests and category in request.interests:
@@ -261,7 +280,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
                        description=localized_description(poi, language), opening_hours=poi["opening_hours"],
                        website=poi["website"], phone=poi["phone"], source_url=poi["source_url"],
                        fetched_at=poi["fetched_at"], distance_m=round(max(distances))),
-            distance_m=round(max(distances)), walking_minutes=longest, visit_minutes=visit,
+            distance_m=round(max(distances)), walking_minutes=longest,
+            walking_seconds=max(seconds), visit_minutes=visit,
             open_status=status,
             open_status_reason=(
                 {"ru": "По расписанию OSM", "en": "According to OSM hours", "kk": "OSM кестесіне сәйкес"}[language]
@@ -272,6 +292,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest) ->
             group_meeting_at=arrival if group else None,
             group_ends_at=arrival + timedelta(minutes=visit) if group else None,
             participant_walking_minutes=walks if group else None,
+            participant_walking_seconds=seconds if group else None,
             participant_interest_matches=matches if group else None,
         )
         scored.append((score, rec))

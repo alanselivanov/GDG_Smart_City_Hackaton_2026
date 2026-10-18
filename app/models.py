@@ -46,8 +46,18 @@ class RecommendBase(BaseModel):
         return self
 
 
-class RecommendRequest(RecommendBase, Location):
+class RecommendRequest(RecommendBase):
+    lat: float | None = Field(default=None, ge=50.9, le=51.4)
+    lon: float | None = Field(default=None, ge=71.0, le=71.9)
+    reference_place: str | None = Field(default=None, min_length=2, max_length=120,
+                                        description="Last named place for phrases such as 'я сейчас там'")
     interests: list[Category] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def coordinate_pair(self):
+        if (self.lat is None) != (self.lon is None):
+            raise ValueError("lat and lon must be provided together")
+        return self
 
 
 class GroupRecommendRequest(RecommendBase):
@@ -73,6 +83,7 @@ class Recommendation(BaseModel):
     poi: PoiOut
     distance_m: int
     walking_minutes: int
+    walking_seconds: int
     visit_minutes: int
     open_status: Literal["open", "closed", "unknown"]
     open_status_reason: str
@@ -82,6 +93,7 @@ class Recommendation(BaseModel):
     group_meeting_at: datetime | None = None
     group_ends_at: datetime | None = None
     participant_walking_minutes: list[int] | None = None
+    participant_walking_seconds: list[int] | None = None
     participant_interest_matches: list[bool] | None = None
 
 
@@ -91,5 +103,5 @@ class RecommendResponse(BaseModel):
     context_used: dict
     source: str = "© OpenStreetMap contributors (ODbL), via Overpass API"
     source_license_url: str = "https://www.openstreetmap.org/copyright"
-    generated_with: Literal["grounded_templates", "llm"]
+    generated_with: Literal["grounded_templates", "llm_verified"]
     notices: list[str]

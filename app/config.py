@@ -25,6 +25,13 @@ class Settings:
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "20"))
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", "512"))
+    routing_url: str = os.getenv("ROUTING_URL", "https://valhalla1.openstreetmap.de")
+    routing_timeout_seconds: float = float(os.getenv("ROUTING_TIMEOUT_SECONDS", "20"))
+    geocoder_url: str = os.getenv("GEOCODER_URL", "https://nominatim.openstreetmap.org")
+    geocoder_user_agent: str = os.getenv("GEOCODER_USER_AGENT", "AstanaWalksHackathon/1.0 (Astana city recommendations)")
+    geocoder_timeout_seconds: float = float(os.getenv("GEOCODER_TIMEOUT_SECONDS", "15"))
 
 
 settings = Settings()

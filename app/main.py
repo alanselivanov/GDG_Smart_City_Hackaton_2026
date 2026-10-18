@@ -11,15 +11,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, settings
 from app.db import Database
+from app.embeddings import EmbeddingError, semantic_scores
 from app.generation import enhance
+from app.geocoding import LocationError, resolve_origin
 from app.ingest import IngestError, refresh
 from app.models import Category, GroupRecommendRequest, Language, PoiOut, RecommendRequest, RecommendResponse
-from app.recommend import ASTANA_TZ, distance_m, infer_budget, localized_description, rank
+from app.recommend import ASTANA_TZ, candidate_pois, distance_m, infer_budget, localized_description, rank
+from app.routing import RoutingError, pedestrian_matrix
 
 
 def create_app(config: Settings = settings) -> FastAPI:
     db = Database(config.database_path)
     refresh_lock = asyncio.Lock()
+    embedding_lock = asyncio.Lock()
     state: dict[str, str | None] = {"last_refresh_error": None}
 
     async def do_refresh() -> int:
@@ -92,11 +96,19 @@ def create_app(config: Settings = settings) -> FastAPI:
                 for d, poi in found[:limit]]
 
     @app.get("/v1/pois/search", response_model=list[PoiOut])
-    def search_pois(q: str = Query(min_length=2, max_length=100), language: Language = "ru",
+    async def search_pois(q: str = Query(min_length=2, max_length=100), language: Language = "ru",
                     limit: int = Query(default=10, ge=1, le=30)):
         needle = q.casefold().strip()
-        found = [poi for poi in db.all_pois() if any(needle in name.casefold() for name in poi["names"].values())]
-        found.sort(key=lambda poi: (not any(name.casefold().startswith(needle) for name in poi["names"].values()), poi["name"]))
+        pois = db.all_pois()
+        if not pois:
+            raise HTTPException(status_code=503, detail="POI data unavailable")
+        try:
+            async with embedding_lock:
+                scores = await semantic_scores(db, pois, needle, config)
+        except EmbeddingError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        found = sorted(pois, key=lambda poi: -(
+            scores[poi["id"]] + (0.3 if any(name.casefold().startswith(needle) for name in poi["names"].values()) else 0)))
         return [PoiOut(**{**poi, "name": poi["names"].get(language) or poi["names"].get("default", poi["name"]),
                           "description": localized_description(poi, language)}) for poi in found[:limit]]
 
@@ -111,9 +123,30 @@ def create_app(config: Settings = settings) -> FastAPI:
         pois = db.all_pois()
         if not pois:
             raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
-        recommendations, notices, start = rank(pois, request)
-        used_llm = await enhance(recommendations, request.language, config)
         group = isinstance(request, GroupRecommendRequest)
+        origin = None
+        if not group:
+            try:
+                origin = await resolve_origin(request, pois, db, config)
+            except LocationError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            request = request.model_copy(update={"lat": origin["lat"], "lon": origin["lon"]})
+        try:
+            if request.query:
+                async with embedding_lock:
+                    scores = await semantic_scores(db, pois, request.query, config)
+            else:
+                scores = {}
+        except EmbeddingError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        candidates = candidate_pois(pois, request, scores, limit=30 if group else 40)
+        participants = request.participants if group else [request]
+        try:
+            routes = await pedestrian_matrix([(person.lat, person.lon) for person in participants], candidates, config)
+        except RoutingError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        recommendations, notices, start = rank(candidates, request, routes, scores)
+        used_llm = await enhance(recommendations, request.language, config)
         context = {
             "query": request.query,
             "language": request.language,
@@ -125,10 +158,15 @@ def create_app(config: Settings = settings) -> FastAPI:
             "interests": [person.interests for person in request.participants] if group else request.interests,
             "participant_count": len(request.participants) if group else 1,
             "location_used": True,
-            "distance_method": "great_circle_distance; walking_time_with_1.25_detour_factor",
+            "origin": origin,
+            "retrieval_method": "openai_embeddings_cosine_and_filters" if request.query else "geospatial_and_filters",
+            "embedding_model": config.embedding_model if request.query else None,
+            "distance_method": "valhalla_osm_pedestrian_matrix",
+            "routing_provider": config.routing_url,
+            "llm_text_policy": "server_verified_options_only",
         }
         return RecommendResponse(recommendations=recommendations, language=request.language,
-                                 context_used=context, generated_with="llm" if used_llm else "grounded_templates",
+                                 context_used=context, generated_with="llm_verified" if used_llm else "grounded_templates",
                                  notices=notices)
 
     @app.post("/v1/recommendations", response_model=RecommendResponse)
