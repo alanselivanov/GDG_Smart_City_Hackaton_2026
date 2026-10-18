@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -71,6 +72,7 @@ def normalize_element(element: dict[str, Any]) -> dict | None:
     safe_tags = {k: str(v)[:300] for k, v in tags.items()
                  if k in {"amenity", "tourism", "leisure", "historic", "shop", "cuisine",
                           "outdoor_seating", "internet_access", "socket:access", "wheelchair",
+                          "interactive",
                           "addr:street", "addr:housenumber", "description", "description:ru",
                           "description:en", "description:kk", "opening_hours", "website", "phone"}}
     names = {language: tags[f"name:{language}"][:180] for language in ("ru", "en", "kk")
@@ -110,6 +112,22 @@ def parse_overpass(data: dict) -> list[dict]:
     return pois
 
 
+def parse_airport_reference(xml: str, node_id: int) -> dict:
+    """Validate current coordinates returned by the official OSM node API."""
+    try:
+        root = ET.fromstring(xml)
+        nodes = [item for item in root.findall("node") if item.get("id") == str(node_id)]
+        if len(nodes) != 1 or nodes[0].get("visible", "true") != "true":
+            raise ValueError("missing OSM node")
+        lat, lon = float(nodes[0].attrib["lat"]), float(nodes[0].attrib["lon"])
+    except (ET.ParseError, KeyError, TypeError, ValueError) as exc:
+        raise IngestError("Airport road-access OSM node is missing or invalid") from exc
+    if not (51.0 <= lat <= 51.07 and 71.42 <= lon <= 71.51):
+        raise IngestError("Airport road-access OSM node moved outside the expected area")
+    return {"lat": lat, "lon": lon,
+            "source_url": f"https://www.openstreetmap.org/node/{node_id}"}
+
+
 async def fetch_pois(config: Settings = settings) -> list[dict]:
     headers = {"User-Agent": config.overpass_user_agent, "Accept": "application/json"}
     async with httpx.AsyncClient(timeout=httpx.Timeout(105.0, connect=15.0), headers=headers) as client:
@@ -131,6 +149,19 @@ async def fetch_pois(config: Settings = settings) -> list[dict]:
     raise IngestError("Overpass request failed")
 
 
+async def refresh_airport_reference(db: Database, config: Settings = settings) -> dict:
+    node_id = config.airport_route_osm_node_id
+    try:
+        async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": config.overpass_user_agent}) as client:
+            response = await client.get(config.osm_api_url.rstrip("/") + f"/api/0.6/node/{node_id}")
+            response.raise_for_status()
+            reference = parse_airport_reference(response.text, node_id)
+    except httpx.HTTPError as exc:
+        raise IngestError(f"OSM airport reference request failed: {type(exc).__name__}") from exc
+    db.save_route_reference("airport", reference)
+    return db.route_reference("airport")
+
+
 async def refresh(db: Database, config: Settings = settings) -> int:
     # Fetch and validate before a single transaction: failed refreshes never erase the cache.
     pois = await fetch_pois(config)
@@ -143,6 +174,7 @@ async def refresh(db: Database, config: Settings = settings) -> int:
 async def main() -> None:
     db = Database(settings.database_path)
     db.init()
+    await refresh_airport_reference(db)
     count = await refresh(db)
     print(f"Imported {count} real OSM POI at {datetime.now(timezone.utc).isoformat()}")
 

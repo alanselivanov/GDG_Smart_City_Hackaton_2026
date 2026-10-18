@@ -22,15 +22,33 @@ async def pedestrian_matrix(origins: list[tuple[float, float]], targets: list[di
     result = {}
     batch_size = max(1, 90 // len(origins))
     for start in range(0, len(targets), batch_size):
-        result.update(await _pedestrian_matrix_batch(origins, targets[start:start + batch_size], config))
+        result.update(await _matrix_batch(origins, targets[start:start + batch_size], config, "pedestrian"))
     return result
 
 
-async def _pedestrian_matrix_batch(origins: list[tuple[float, float]], targets: list[dict],
-                                   config: Settings) -> dict[str, list[tuple[int, int] | None]]:
+async def airport_transfers(pois: list[dict], lat: float, lon: float, mode: str,
+                            config: Settings = settings) -> dict[str, tuple[int, int] | None]:
+    """Network distance and time from each POI to a sourced airport road-access point."""
+    if not pois:
+        return {}
+    if mode not in {"auto", "pedestrian"}:
+        raise RoutingError("Unsupported airport transfer mode")
+    result: dict[str, tuple[int, int] | None] = {}
+    for start in range(0, len(pois), 90):
+        batch = pois[start:start + 90]
+        routes = await _matrix_batch(
+            [(poi["lat"], poi["lon"]) for poi in batch],
+            [{"id": "airport", "lat": lat, "lon": lon}], config, mode,
+        )
+        result.update({poi["id"]: routes["airport"][index] for index, poi in enumerate(batch)})
+    return result
+
+
+async def _matrix_batch(origins: list[tuple[float, float]], targets: list[dict],
+                        config: Settings, costing: str) -> dict[str, list[tuple[int, int] | None]]:
     payload = {"sources": [{"lat": lat, "lon": lon} for lat, lon in origins],
                "targets": [{"lat": poi["lat"], "lon": poi["lon"]} for poi in targets],
-               "costing": "pedestrian", "units": "kilometers"}
+               "costing": costing, "units": "kilometers"}
     try:
         async with httpx.AsyncClient(timeout=config.routing_timeout_seconds) as client:
             for attempt in range(2):
@@ -64,4 +82,4 @@ async def _pedestrian_matrix_batch(origins: list[tuple[float, float]], targets: 
             result[poi["id"]] = values
         return result
     except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError) as exc:
-        raise RoutingError(f"Pedestrian routing failed: {type(exc).__name__}") from exc
+        raise RoutingError(f"Routing failed: {type(exc).__name__}") from exc

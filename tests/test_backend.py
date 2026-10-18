@@ -1,7 +1,7 @@
 import asyncio
 import json
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -10,13 +10,13 @@ import pytest
 
 from app.config import settings
 from app.db import Database
-from app.ingest import IngestError, normalize_element, parse_overpass
+from app.ingest import IngestError, normalize_element, parse_airport_reference, parse_overpass
 from app.main import create_app
 from app.models import RecommendRequest
-from app.recommend import infer_budget, opening_status, rank
-from app.generation import enhance
+from app.recommend import feature_kind, infer_budget, infer_flight_minutes, is_before_flight, opening_status, rank
+from app.generation import enhance, verified_options
 from app.embeddings import ensure_index, semantic_scores, EmbeddingError
-from app.routing import pedestrian_matrix, RoutingError
+from app.routing import airport_transfers, pedestrian_matrix, RoutingError
 from app.recommend import distance_m
 from app.geocoding import LocationError, mentioned_place
 
@@ -53,6 +53,10 @@ def prepared_client(tmp_path):
     data[1]["tags"].pop("amenity")
     data[1]["tags"]["tourism"] = "museum"
     db.upsert_pois(parse_overpass({"elements": data}))
+    db.save_route_reference("airport", {
+        "lat": 51.0274541, "lon": 71.4603008,
+        "source_url": "https://www.openstreetmap.org/node/14089441237",
+    })
     return TestClient(create_app(config)), db
 
 
@@ -68,6 +72,25 @@ def test_overpass_normalization_and_incomplete_response():
         pass
     else:
         assert False, "incomplete Overpass data must not replace the cache"
+
+
+def test_airport_reference_is_sourced_and_updated_with_pois(tmp_path):
+    db = Database(tmp_path / "db.sqlite3")
+    db.init()
+    first = normalize_element(element(1, "First", "cafe", 51.1, 71.4))
+    db.upsert_pois([first])
+    for latitude in (51.0274541, 51.0275541):
+        snapshot = (f'<osm><node id="14089441237" lat="{latitude}" '
+                    'lon="71.4603008" visible="true" /></osm>')
+        reference = parse_airport_reference(snapshot, 14089441237)
+        db.save_route_reference("airport", reference)
+        assert db.route_reference("airport")["lat"] == latitude
+        assert reference["source_url"].endswith("/14089441237")
+    with pytest.raises(IngestError):
+        parse_airport_reference("<osm />", 14089441237)
+    with pytest.raises(IngestError):
+        parse_airport_reference('<osm><node id="14089441237" lat="50.0" '
+                                'lon="71.4603008" /></osm>', 14089441237)
 
 
 def test_cache_replaces_old_snapshot(tmp_path):
@@ -304,3 +327,214 @@ def test_unknown_explicit_place_does_not_use_device_coordinates(tmp_path, monkey
             "lat": 51.09, "lon": 71.40,
         })
     assert response.status_code == 404
+
+
+def test_unknown_named_place_has_clear_localized_error(tmp_path, monkeypatch):
+    client, _ = prepared_client(tmp_path)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr("app.geocoding.httpx.AsyncClient",
+                        lambda **kwargs: original_client(transport=httpx.MockTransport(
+                            lambda request: httpx.Response(200, json=[])), **kwargs))
+    with client:
+        response = client.post("/v1/recommendations", json={
+            "query": "Я возле Несуществующего места, хочу гулять",
+            "lat": 51.09, "lon": 71.4, "language": "ru",
+        })
+    assert response.status_code == 404
+    assert "не найдено в Астане" in response.json()["detail"]
+
+
+def test_natural_language_time_includes_words_and_rejects_unsupported_short_trip(tmp_path):
+    assert mentioned_place("У меня 2 часа перед вылетом") is None
+    assert is_before_flight("Рейс через два часа") is True
+    assert is_before_flight("Рядом с аэропортом хочу кофе") is False
+    assert infer_budget("Хочу поесть в течение часа") == 60
+    assert infer_budget("У меня полтора часа") == 90
+    assert infer_budget("пару часов перед вылетом") == 120
+    assert infer_budget("У меня 2 часа перед вылетом, хочу прогулку 30 минут") == 30
+    assert infer_flight_minutes("У меня 2 часа перед вылетом, хочу прогулку 30 минут") == 120
+    assert infer_flight_minutes("Рейс через два часа") == 120
+    assert infer_budget("30–60 минут") == 60
+    assert infer_budget("10 минут") == 10
+    client, _ = prepared_client(tmp_path)
+    with client:
+        response = client.post("/v1/recommendations", json={
+            "query": "Хочу поесть в течение часа", "lat": 51.09, "lon": 71.4,
+        })
+        short = client.post("/v1/recommendations", json={
+            "query": "У меня 10 минут", "lat": 51.09, "lon": 71.4,
+        })
+    assert response.status_code == 200
+    assert response.json()["context_used"]["time_budget_minutes"] == 60
+    assert short.status_code == 422
+
+
+def test_airport_transfer_uses_network_auto_route(monkeypatch):
+    original_client = httpx.AsyncClient
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["costing"] == "auto"
+        assert len(body["sources"]) == 2 and len(body["targets"]) == 1
+        return httpx.Response(200, json={"sources_to_targets": [
+            [{"time": 600, "distance": 8.5}], [{"time": None, "distance": None}],
+        ]})
+
+    monkeypatch.setattr("app.routing.httpx.AsyncClient",
+                        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
+    pois = [{"id": "a", "lat": 51.1, "lon": 71.4}, {"id": "b", "lat": 51.2, "lon": 71.5}]
+    routes = asyncio.run(airport_transfers(pois, 51.02745, 71.4603, "auto"))
+    assert routes == {"a": (8500, 600), "b": None}
+
+
+def test_flight_plan_requires_deadline_and_includes_road_and_buffer(tmp_path, monkeypatch):
+    client, db = prepared_client(tmp_path)
+    transfer_minutes = 10
+
+    async def fake_transfer(pois, lat, lon, mode, config):
+        assert mode == "auto"
+        reference = db.route_reference("airport")
+        assert (lat, lon) == (reference["lat"], reference["lon"])
+        return {poi["id"]: (7000, transfer_minutes * 60) for poi in pois}
+
+    monkeypatch.setattr("app.main.airport_transfers", fake_transfer)
+    payload = {"query": "У меня 2 часа перед вылетом, хочу кофе",
+               "lat": 51.089, "lon": 71.4, "language": "ru",
+               "airport_arrival_buffer_minutes": 90}
+    with client:
+        missing = client.post("/v1/recommendations", json={
+            "query": "Хочу кофе перед вылетом", "lat": 51.089, "lon": 71.4,
+        })
+        valid = client.post("/v1/recommendations", json=payload)
+        absolute = client.post("/v1/recommendations", json={
+            "query": "Хочу кофе перед вылетом", "lat": 51.089, "lon": 71.4,
+            "flight_departure_at": (datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(hours=4)).isoformat(),
+        })
+        two_times = client.post("/v1/recommendations", json={
+            "query": "У меня 2 часа перед вылетом, хочу прогулку 30 минут",
+            "lat": 51.089, "lon": 71.4,
+        })
+        conservative = client.post("/v1/recommendations", json={
+            key: value for key, value in payload.items() if key != "airport_arrival_buffer_minutes"
+        })
+        transfer_minutes = 35
+        too_late = client.post("/v1/recommendations", json=payload)
+    assert missing.status_code == 422
+    assert "время вылета" in missing.json()["detail"]
+    assert valid.status_code == 200, valid.text
+    body = valid.json()
+    assert body["context_used"]["flight_plan"]["airport_arrival_buffer_minutes"] == 90
+    assert body["context_used"]["flight_plan"]["airport_transfer_mode"] == "auto"
+    assert body["recommendations"]
+    assert all(item["airport_transfer_minutes"] == 10 for item in body["recommendations"])
+    assert all(item["latest_leave_for_airport_at"] for item in body["recommendations"])
+    assert absolute.status_code == 200
+    assert 238 <= absolute.json()["context_used"]["time_budget_minutes"] <= 240
+    assert absolute.json()["context_used"]["flight_plan"]["departure_source"] == "flight_departure_at"
+    assert two_times.status_code == 200
+    assert two_times.json()["context_used"]["time_budget_minutes"] == 30
+    departure = datetime.fromisoformat(two_times.json()["context_used"]["flight_plan"]["departure_at"])
+    start = datetime.fromisoformat(two_times.json()["context_used"]["starts_at"])
+    assert 119 <= (departure - start).total_seconds() / 60 <= 121
+    assert conservative.status_code == 200
+    assert conservative.json()["context_used"]["flight_plan"]["airport_arrival_buffer_minutes"] == 120
+    assert conservative.json()["recommendations"] == []
+    assert too_late.status_code == 200
+    assert too_late.json()["recommendations"] == []
+    assert "подходящих мест не найдено" in too_late.json()["notices"][-1]
+
+
+def test_unusual_results_are_diverse_and_uncertainty_cannot_be_dropped(tmp_path):
+    db = Database(tmp_path / "diverse.sqlite3")
+    db.init()
+    raw = [
+        {"type": "node", "id": 1, "lat": 51.10, "lon": 71.41,
+         "tags": {"name": "Art One", "tourism": "artwork"}},
+        {"type": "node", "id": 2, "lat": 51.11, "lon": 71.42,
+         "tags": {"name": "Memorial Two", "historic": "memorial"}},
+        {"type": "node", "id": 3, "lat": 51.12, "lon": 71.43,
+         "tags": {"name": "Monument Three", "historic": "monument"}},
+        {"type": "node", "id": 4, "lat": 51.13, "lon": 71.44,
+         "tags": {"name": "Park Four", "leisure": "park"}},
+    ]
+    db.upsert_pois(parse_overpass({"elements": raw}))
+    pois = db.all_pois()
+    routes = {poi["id"]: [(600, 420)] for poi in pois}
+    request = RecommendRequest(lat=51.1, lon=71.41, query="Что-то необычное, пешком", limit=3)
+    recommendations, _, _ = rank(pois, request, routes)
+    assert len(recommendations) == 3
+    by_id = {poi["id"]: poi for poi in pois}
+    assert len({feature_kind(by_id[rec.poi.id]) for rec in recommendations}) == 3
+    assert all(rec.poi.category != "park" for rec in recommendations)
+    assert any("арт-объект" in rec.why for rec in recommendations)
+    assert all("не указано" in rec.why for rec in recommendations)
+    assert all(verified_options(rec, "ru")["why_options"]["route_category"] == rec.why
+               for rec in recommendations)
+
+
+def test_unnamed_playgrounds_have_distinct_labels_and_missing_details(tmp_path):
+    db = Database(tmp_path / "playgrounds.sqlite3")
+    db.init()
+    raw = [{"type": "way", "id": identifier,
+            "center": {"lat": 51.10 + index * 0.002, "lon": 71.41 + index * 0.002},
+            "tags": {"leisure": "playground"}}
+           for index, identifier in enumerate((101, 102, 103))]
+    db.upsert_pois(parse_overpass({"elements": raw}))
+    pois = db.all_pois()
+    routes = {poi["id"]: [(300 + index * 200, 240 + index * 120)]
+              for index, poi in enumerate(pois)}
+    recommendations, _, _ = rank(
+        pois, RecommendRequest(lat=51.09, lon=71.4, query="Детские площадки", limit=3), routes
+    )
+    assert len(recommendations) == 2
+    assert all(rec.poi.name_is_generic for rec in recommendations)
+    assert len({rec.poi.name for rec in recommendations}) == 2
+    assert all("OSM #" in rec.poi.name for rec in recommendations)
+    assert all(any("описание" in item for item in rec.missing_information)
+               for rec in recommendations)
+
+
+def test_walk_child_and_sightseeing_queries_exclude_unrelated_venues(tmp_path):
+    db = Database(tmp_path / "relevance.sqlite3")
+    db.init()
+    raw = [
+        element(1, "Park", "cafe", 51.10, 71.41),
+        element(2, "Dinner", "restaurant", 51.10, 71.41),
+        {"type": "node", "id": 3, "lat": 51.10, "lon": 71.41,
+         "tags": {"name": "Green Park", "leisure": "park"}},
+        {"type": "way", "id": 4, "center": {"lat": 51.101, "lon": 71.412},
+         "tags": {"leisure": "playground"}},
+        {"type": "node", "id": 5, "lat": 51.10, "lon": 71.41,
+         "tags": {"name": "Cinema", "amenity": "cinema"}},
+        {"type": "node", "id": 6, "lat": 51.10, "lon": 71.41,
+         "tags": {"name": "Memorial", "historic": "memorial"}},
+    ]
+    db.upsert_pois(parse_overpass({"elements": raw}))
+    pois = db.all_pois()
+    routes = {poi["id"]: [(500, 360)] for poi in pois}
+    stroll, _, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.4,
+                                                query="Хочу прогуляться пешком"), routes)
+    child, notices, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.4,
+                                                    query="С ребёнком: площадки или музей с интерактивами?"), routes)
+    sightseeing, _, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.4,
+                                                    query="Турист хочет посмотреть достопримечательности"), routes)
+    assert {rec.poi.category for rec in stroll} <= {"park", "landmark", "viewpoint"}
+    assert [rec.poi.category for rec in child] == ["family"]
+    assert any("Интерактивность" in notice for notice in notices)
+    assert {rec.poi.category for rec in sightseeing} <= {"park", "landmark", "museum", "viewpoint"}
+
+
+def test_missing_quiet_and_socket_facts_are_disclosed(tmp_path):
+    client, db = prepared_client(tmp_path)
+    pois = db.all_pois()
+    routes = {poi["id"]: [(150, 120)] for poi in pois}
+    recommendations, notices, _ = rank(
+        pois, RecommendRequest(lat=51.09, lon=71.4,
+                               query="Хочу тихое кафе с розеткой", limit=1), routes
+    )
+    item = recommendations[0]
+    assert item.poi.category == "cafe"
+    assert any("шума" in value for value in item.missing_information)
+    assert any("розеток" in value for value in item.missing_information)
+    assert "Розетки отмечены" not in item.why
+    assert any("розеток" in value for value in notices)

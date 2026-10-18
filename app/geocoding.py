@@ -24,7 +24,7 @@ class LocationError(Exception):
 
 _MENTION = re.compile(
     r"(?iu)(?:^|[\s,.;])(?:я\s+)?(?:сейчас\s+)?(?:нахожусь\s+)?"
-    r"(?:возле|около|у|рядом\s+с|неподал[её]ку\s+от|near|by|at)\s+"
+    r"(?:возле|около|у(?!\s+меня\b)|рядом\s+с|неподал[её]ку\s+от|near|by|at)\s+"
     r"(?:(?:здания|здании|трц|тц|музея|парка|мечети)\s+)?"
     r"(?P<place>[^,;.!?—–]+)"
 )
@@ -69,7 +69,7 @@ def _local_place(name: str, pois: list[dict], request: RecommendRequest) -> dict
 async def _external_place(name: str, language: str, db: Database, config: Settings) -> dict:
     key = normalize_name(name)
     cached = db.cached_geocode(key)
-    if cached and datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"]) < timedelta(days=30):
+    if cached and datetime.now(timezone.utc) - datetime.fromisoformat(cached["fetched_at"]) < timedelta(days=1):
         return {**cached, "source": "cached_osm_geocoder"}
     await asyncio.sleep(db.reserve_geocode_slot())
     params = {"q": name, "format": "jsonv2", "limit": 5, "countrycodes": "kz",
@@ -101,7 +101,12 @@ async def _external_place(name: str, language: str, db: Database, config: Settin
         options.append((similarity, {"name": primary, "lat": lat, "lon": lon,
                                      "source_url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}"}))
     if not options:
-        raise LocationError(f"Place '{name}' was not found in Astana", 404)
+        messages = {
+            "ru": f"Место «{name}» не найдено в Астане. Уточните название или отправьте геолокацию без названия места.",
+            "en": f"Place '{name}' was not found in Astana. Check the name or send device location without a named place.",
+            "kk": f"«{name}» орны Астанада табылмады. Атауын нақтылаңыз немесе орын атауынсыз геолокация жіберіңіз.",
+        }
+        raise LocationError(messages[language], 404)
     options.sort(key=lambda item: -item[0])
     chosen = options[0][1]
     if len(options) > 1 and options[1][0] >= options[0][0] - 0.03 and \

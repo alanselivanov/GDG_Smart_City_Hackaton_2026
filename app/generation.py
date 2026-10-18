@@ -22,15 +22,12 @@ CHECK_HOURS = {
 
 
 def verified_options(rec: Recommendation, language: str) -> dict:
-    first_sentence = rec.why.split(". ", 1)[0]
-    if not first_sentence.endswith("."):
-        first_sentence += "."
-    why = {"route_category": first_sentence}
-    if rec.why != first_sentence:
-        why["all_verified"] = rec.why
-    actions = {"category_activity": rec.what_to_do, "check_source": CHECK_SOURCE[language]}
+    # Every selectable option retains required uncertainty and flight instructions.
+    why = {"route_category": rec.why}
+    actions = {"category_activity": rec.what_to_do,
+               "check_source": rec.what_to_do + " " + CHECK_SOURCE[language]}
     if rec.open_status == "unknown":
-        actions["check_hours"] = CHECK_HOURS[language]
+        actions["check_hours"] = rec.what_to_do + " " + CHECK_HOURS[language]
     return {"id": rec.poi.id, "why_options": why, "action_options": actions}
 
 

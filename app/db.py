@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS geocode_rate (
   id INTEGER PRIMARY KEY CHECK(id = 1),
   next_allowed_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS route_references (
+  key TEXT PRIMARY KEY,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  source_url TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
 """
 
 
@@ -122,6 +129,21 @@ class Database:
         with self.connect() as con:
             row = con.execute("SELECT name,lat,lon,source_url,fetched_at FROM geocode_cache WHERE query_key=?", (key,)).fetchone()
         return dict(row) if row else None
+
+    def route_reference(self, key: str) -> dict | None:
+        with self.connect() as con:
+            row = con.execute("SELECT lat,lon,source_url,fetched_at FROM route_references WHERE key=?",
+                              (key,)).fetchone()
+        return dict(row) if row else None
+
+    def save_route_reference(self, key: str, reference: dict) -> None:
+        with self.connect() as con:
+            con.execute("""INSERT INTO route_references(key,lat,lon,source_url,fetched_at)
+                VALUES(?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET
+                lat=excluded.lat,lon=excluded.lon,source_url=excluded.source_url,
+                fetched_at=excluded.fetched_at""",
+                (key, reference["lat"], reference["lon"], reference["source_url"],
+                 datetime.now(timezone.utc).isoformat()))
 
     def save_geocode(self, key: str, place: dict) -> None:
         with self.connect() as con:

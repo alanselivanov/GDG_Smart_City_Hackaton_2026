@@ -22,7 +22,7 @@ def poi_text(poi: dict) -> str:
     parts = ["Astana place", *dict.fromkeys(poi["names"].values()),
              *(CATEGORY_LABELS[language][poi["category"]] for language in ("ru", "kk", "en"))]
     parts.extend(str(tags[key]) for key in (
-        "cuisine", "tourism", "amenity", "leisure", "historic", "shop",
+        "cuisine", "tourism", "amenity", "leisure", "historic", "shop", "interactive",
         "description", "description:ru", "description:kk", "description:en"
     ) if tags.get(key))
     return " | ".join(parts)[:1800]

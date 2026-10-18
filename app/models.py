@@ -28,6 +28,9 @@ class RecommendBase(BaseModel):
     time_budget_minutes: int = Field(default=90, ge=20, le=360)
     max_travel_minutes: int | None = Field(default=None, ge=5, le=90)
     starts_at: datetime | None = None
+    flight_departure_at: datetime | None = Field(default=None, description="Flight departure with timezone; required if the query gives no time before departure")
+    airport_arrival_buffer_minutes: int = Field(default=120, ge=60, le=240, description="Minutes reserved at the airport before departure; check your airline's requirements")
+    airport_transfer_mode: Literal["auto", "pedestrian"] = "auto"
     categories: list[Category] = Field(default_factory=list, max_length=11)
     exclude_categories: list[Category] = Field(default_factory=list, max_length=11)
     limit: int = Field(default=3, ge=1, le=3)
@@ -43,6 +46,8 @@ class RecommendBase(BaseModel):
             raise ValueError("categories and exclude_categories must not overlap")
         if self.starts_at is not None and self.starts_at.tzinfo is None:
             raise ValueError("starts_at must include a timezone offset")
+        if self.flight_departure_at is not None and self.flight_departure_at.tzinfo is None:
+            raise ValueError("flight_departure_at must include a timezone offset")
         return self
 
 
@@ -77,6 +82,7 @@ class PoiOut(BaseModel):
     source_url: str
     fetched_at: str
     distance_m: int | None = None
+    name_is_generic: bool = False
 
 
 class Recommendation(BaseModel):
@@ -90,6 +96,10 @@ class Recommendation(BaseModel):
     why: str
     what_to_do: str
     text_source: Literal["generated_from_poi"] = "generated_from_poi"
+    missing_information: list[str] = Field(default_factory=list)
+    airport_transfer_minutes: int | None = None
+    airport_transfer_distance_m: int | None = None
+    latest_leave_for_airport_at: datetime | None = None
     group_meeting_at: datetime | None = None
     group_ends_at: datetime | None = None
     participant_walking_minutes: list[int] | None = None

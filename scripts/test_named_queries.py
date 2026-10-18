@@ -18,6 +18,10 @@ CASES = [
      "language": "ru", "lat": 51.0890897, "lon": 71.4073303},
     {"query": "Я сейчас там, хочу поесть в течение часа.", "language": "ru",
      "reference_place": "Mega Silk Way"},
+    {"query": "Я турист, у меня 2 часа перед вылетом. Хочу посмотреть что-то рядом пешком.",
+     "language": "ru", "lat": 51.0920974, "lon": 71.4146255},
+    {"query": "Я турист, у меня 4 часа перед вылетом. Хочу посмотреть достопримечательности пешком.",
+     "language": "ru", "lat": 51.0920974, "lon": 71.4146255},
 ]
 
 
@@ -62,6 +66,10 @@ def main() -> None:
                     print(f"Источник точки: {origin['source']}")
                     print(f"Бюджет времени: {context['time_budget_minutes']} мин")
                     print(f"Текст: {body['generated_with']}")
+                    if context.get("flight_plan"):
+                        plan = context["flight_plan"]
+                        print(f"Вылет: {plan['departure_at']}; запас: {plan['airport_arrival_buffer_minutes']} мин")
+                        print(f"Точка аэропорта: {plan['airport_route_reference']['source_url']}")
                     for item in body["recommendations"]:
                         poi = item["poi"]
                         print(f"  Место: {poi['name']}")
@@ -70,6 +78,12 @@ def main() -> None:
                         print(f"  Почему: {item['why']}")
                         print(f"  Что делать: {item['what_to_do']}")
                         print(f"  Часы: {item['open_status_reason']}")
+                        for missing in item["missing_information"]:
+                            print(f"  Не указано: {missing}")
+                        if item["airport_transfer_minutes"] is not None:
+                            print(f"  До аэропорта: {item['airport_transfer_distance_m']} м, "
+                                  f"{item['airport_transfer_minutes']} мин; "
+                                  f"выйти до {item['latest_leave_for_airport_at']}")
                         print(f"  OSM: {poi['source_url']}")
                     if not body["recommendations"]:
                         print("Рекомендаций нет")
