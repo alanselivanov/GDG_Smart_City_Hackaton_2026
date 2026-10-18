@@ -41,28 +41,18 @@ function formatBudget(minutes: number): string {
   return rest ? `${hours} ч ${rest} мин` : `${hours} ч`
 }
 
-function mentionedStartTime(text: string): Date | null {
-  const match = text.match(/(?:^|[\s,;.!?])(?:в\s+)?(сегодня|завтра)\s+(?:в\s+)?(\d{1,2}):(\d{2})(?=$|[\s,;.!?])/iu)
-  if (!match) return null
-  const hours = Number(match[2])
-  const minutes = Number(match[3])
-  if (hours > 23 || minutes > 59) return null
-  const date = new Date()
-  if (match[1].toLocaleLowerCase('ru-RU') === 'завтра') date.setDate(date.getDate() + 1)
-  date.setHours(hours, minutes, 0, 0)
-  return date
-}
-
 function formatStart(iso: string): string {
   return new Date(iso).toLocaleString('ru-RU', {
     day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
   })
 }
 
-function compactWhy(recommendation: Recommendation): string {
-  const withoutName = recommendation.why.replace(`«${recommendation.poi.name}» — `, '')
-  const firstSentence = withoutName.split(';')[0].trim()
-  return firstSentence.replace(/ по данным (?:OSM|2GIS)$/iu, '')
+function compactWhy(recommendation: Recommendation): string | null {
+  const routeSentence = /^«[^»]+» — [^.]+\.\s*/u
+  if (routeSentence.test(recommendation.why)) {
+    return recommendation.why.replace(routeSentence, '').trim() || null
+  }
+  return recommendation.why
 }
 
 function prepareQuery(text: string): string {
@@ -84,7 +74,7 @@ function RecommendationCard({ recommendation, index, selected, onShowMap }: { re
   const [showDetails, setShowDetails] = useState(false)
   const mapUrl = `https://www.openstreetmap.org/?mlat=${poi.lat}&mlon=${poi.lon}#map=16/${poi.lat}/${poi.lon}`
   const provider = poi.id.startsWith('2gis/') ? '2GIS' : 'OpenStreetMap'
-  const hasUsefulPreview = !/по данным (?:OSM|2GIS);/iu.test(recommendation.why)
+  const preview = compactWhy(recommendation)
 
   return (
     <article className={selected ? 'recommendation-card selected' : 'recommendation-card'} id={`card-${index}`}>
@@ -92,9 +82,9 @@ function RecommendationCard({ recommendation, index, selected, onShowMap }: { re
         <div className="card-topline"><span className="card-number">{String(index + 1).padStart(2, '0')}</span><span className="category-badge">{categoryNames[poi.category]}</span></div>
         <h3>{poi.name}</h3>
         <div className="card-facts"><strong>{recommendation.walking_minutes} мин пешком</strong><span>{formatDistance(recommendation.distance_m)} от старта</span></div>
-        {hasUsefulPreview && <p className="card-reason"><strong>Почему:</strong> <span className="card-reason-text">{compactWhy(recommendation)}</span></p>}
+        {preview && <p className="card-reason"><strong>Почему:</strong> <span className="card-reason-text">{preview}</span></p>}
         <div className="card-status"><span className={recommendation.open_status === 'open' ? 'hours-known' : recommendation.open_status === 'closed' ? 'hours-closed' : 'hours-unknown'}>
-          {recommendation.open_status === 'open' ? 'По расписанию открыто' : recommendation.open_status === 'closed' ? 'По расписанию закрыто' : 'Часы уточнить'}
+          {recommendation.open_status === 'open' ? 'По расписанию открыто' : recommendation.open_status === 'closed' ? 'По расписанию закрыто' : 'Открытость неизвестна'}
         </span><span>{provider === '2GIS' ? '2GIS' : 'OSM'}</span>{provider === '2GIS' && poi.rating != null && poi.rating > 0 && <span>★ {poi.rating.toFixed(1).replace('.', ',')}</span>}</div>
         <div className="card-actions"><button type="button" onClick={onShowMap}>На карте ↗</button><button type="button" className="details-toggle" aria-expanded={showDetails} aria-controls={`details-${index}`} onClick={() => setShowDetails((value) => !value)}>{showDetails ? 'Скрыть' : 'Подробнее'} <span aria-hidden="true">{showDetails ? '−' : '+'}</span></button></div>
         <div className="card-details-body" id={`details-${index}`} hidden={!showDetails}>
@@ -176,12 +166,6 @@ function App() {
       if (plannedTime.getTime() < now) { setError('Время начала должно быть в будущем.'); return }
       if (plannedTime.getTime() > now + 7 * 24 * 60 * 60 * 1000) { setError('Можно запланировать прогулку не дальше чем на 7 дней.'); return }
       startsAt = plannedTime.toISOString()
-    } else {
-      const mentioned = mentionedStartTime(query)
-      if (mentioned) {
-        if (mentioned.getTime() < Date.now()) { setError('Это время уже прошло. Уточните время в запросе или выберите его в настройках.'); return }
-        startsAt = mentioned.toISOString()
-      }
     }
     activeRequest.current?.abort()
     const controller = new AbortController()
@@ -205,7 +189,6 @@ function App() {
 
   const originName = result?.context_used.origin?.name
   const namedStart = hasNamedStartingPlace(query)
-  const inferredStart = startMode === 'now' ? mentionedStartTime(query) : null
 
   function showOnMap(id: string) {
     setSelectedPoiId(id)
@@ -230,7 +213,6 @@ function App() {
               <div className="quick-actions"><button type="button" className="example-button" onClick={() => setQuery('Я возле Мега Силквей, хочу погулять 2 часа пешком')}>Пример ↗</button><button type="button" className="secondary-button" onClick={useDeviceLocation} disabled={locationPending}>{locationPending ? 'Определяем…' : coordinates ? 'Обновить геопозицию' : '◎ Моя геопозиция'}</button></div>
               {coordinates && <p className="location-status">{namedStart ? 'На карте — вы и старт из запроса. Подбор идёт от старта из запроса.' : 'Геопозиция определена.'} <button type="button" onClick={() => { setCoordinates(null); setLocationError(null); setResult(null); setSelectedPoiId(null) }}>Отключить</button></p>}
               {locationError && <p className="field-error" role="alert">{locationError}</p>}
-              {inferredStart && <p className="time-hint"><span aria-hidden="true">◷</span> {formatStart(inferredStart.toISOString())}</p>}
               <details className="advanced-options">
                 <summary>Уточнить поиск</summary>
                 <div className="advanced-content">
@@ -241,7 +223,7 @@ function App() {
                       </select>
                     </label>
                     <label className="input-label">Начало прогулки
-                      <select value={startMode} onChange={(event) => setStartMode(event.target.value as StartMode)}><option value="now">{inferredStart ? 'Из запроса' : 'Сейчас'}</option><option value="later">Выбрать время</option></select>
+                      <select value={startMode} onChange={(event) => setStartMode(event.target.value as StartMode)}><option value="now">Сейчас или из запроса</option><option value="later">Выбрать время</option></select>
                     </label>
                   </div>
                   {startMode === 'later' && <label className="input-label scheduled-start">Дата и время (по времени вашего устройства)<input type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} required /></label>}
@@ -267,7 +249,7 @@ function App() {
                 <details className="result-details"><summary>Как мы подобрали места и что проверить?</summary><div>
                   <p>Учтено: {result.context_used.time_budget_minutes != null ? `${formatBudget(result.context_used.time_budget_minutes)} на прогулку` : 'время из запроса'}{result.context_used.max_travel_minutes ? ` · до ${result.context_used.max_travel_minutes} мин пешком` : ''}{result.context_used.starts_at ? ` · начало ${new Date(result.context_used.starts_at).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}` : ''}.</p>
                   {result.notices.map((notice, index) => <p key={index}>{notice}</p>)}
-                  <p>Данные: {result.context_used.source_license_urls ? Object.entries(result.context_used.source_license_urls).map(([provider, url], index) => <span key={provider}>{index > 0 ? ' · ' : ''}<a href={url} target="_blank" rel="noopener noreferrer">{provider === '2gis' ? '2GIS' : 'OpenStreetMap'}</a></span>) : <a href={result.source_license_url} target="_blank" rel="noopener noreferrer">{result.source}</a>}. {result.context_used.fallback_used ? '2GIS сейчас недоступен, использованы данные OSM. ' : ''}Текст {result.generated_with === 'llm_verified' ? 'проверен ИИ по данным мест' : 'составлен по данным мест'}.</p>
+                  <p>Данные: {result.context_used.source_license_urls ? Object.entries(result.context_used.source_license_urls).map(([provider, url], index) => <span key={provider}>{index > 0 ? ' · ' : ''}<a href={url} target="_blank" rel="noopener noreferrer">{provider === '2gis' ? '2GIS' : 'OpenStreetMap'}</a></span>) : <a href={result.source_license_url} target="_blank" rel="noopener noreferrer">{result.source}</a>}. {result.context_used.fallback_used ? '2GIS сейчас недоступен, использованы данные OSM. ' : ''}Текст {result.generated_with === 'llm_verified' ? 'сгенерирован и проверен ИИ по данным мест' : result.generated_with === 'mixed' ? 'частично сгенерирован и проверен ИИ, частично составлен по данным мест' : 'составлен по данным мест'}.</p>
                 </div></details>
               </div> :
               <div className="empty-results"><strong>Подходящих мест пока нет</strong><p>Попробуйте увеличить время в запросе, разрешить более долгую дорогу или назвать другую точку старта.</p>{result.notices.map((notice, index) => <p key={index}>{notice}</p>)}</div>)}

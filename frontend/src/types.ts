@@ -69,7 +69,7 @@ export interface RecommendResponse {
   }
   source: string
   source_license_url: string
-  generated_with: 'grounded_templates' | 'llm_verified'
+  generated_with: 'grounded_templates' | 'llm_verified' | 'mixed'
   notices: string[]
 }
 

@@ -24,6 +24,7 @@ QUERY = f"""[out:json][timeout:90];
  nwr["leisure"="playground"]({BBOX});
  nwr["name"]["historic"]({BBOX});
  nwr["name"]["shop"~"^(mall|books)$"]({BBOX});
+ nwr["name"~"Nur.?Alem|Нур.?Алем|Нұр.?Әлем",i]({BBOX});
 );
 out center;"""
 
@@ -63,6 +64,9 @@ def normalize_element(element: dict[str, Any]) -> dict | None:
                      if (value := tags.get(key)) in CATEGORY_MAP), None)
     if category is None:
         category = "landmark" if tags.get("historic") else None
+    if category is None and any(word in name.casefold().replace("-", " ") for word in
+                                ("nur alem", "нур алем", "нұр әлем")):
+        category = "landmark"
     if category is None:
         return None
     element_type = element.get("type")
@@ -72,7 +76,7 @@ def normalize_element(element: dict[str, Any]) -> dict | None:
     safe_tags = {k: str(v)[:300] for k, v in tags.items()
                  if k in {"amenity", "tourism", "leisure", "historic", "shop", "cuisine",
                           "outdoor_seating", "internet_access", "socket:access", "wheelchair",
-                          "interactive",
+                          "interactive", "quiet",
                           "addr:street", "addr:housenumber", "description", "description:ru",
                           "description:en", "description:kk", "opening_hours", "website", "phone"}}
     names = {language: tags[f"name:{language}"][:180] for language in ("ru", "en", "kk")

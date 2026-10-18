@@ -28,6 +28,8 @@ def poi_text(poi: dict) -> str:
     ) if tags.get(key))
     # 2GIS candidates are embedded only for this request, never saved in SQLite.
     parts.extend(attribute["name"] for attribute in facts(poi))
+    parts.extend(fact["text_ru"] for fact in poi.get("facts") or [])
+    parts.extend(fact["text_en"] for fact in poi.get("facts") or [])
     return " | ".join(parts)[:1800]
 
 

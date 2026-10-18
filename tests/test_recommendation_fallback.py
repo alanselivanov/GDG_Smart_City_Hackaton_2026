@@ -20,7 +20,10 @@ from app.recommend import distance_m
 class RecommendationPipelineTests(unittest.TestCase):
     def call(self, provider_reply, *, path="/v1/recommendations", payload=None,
              with_osm=True, key="test-key", airport=False):
-        payload = payload or {"query": "кофе рядом на 30 минут", "lat": 51.09, "lon": 71.4}
+        payload = dict(payload or {"query": "кофе рядом на 30 минут", "lat": 51.09, "lon": 71.4})
+        if "starts_at" not in payload:
+            daytime = datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(days=1)
+            payload["starts_at"] = daytime.replace(hour=13, minute=0, second=0, microsecond=0).isoformat()
         provider_points = []
         routed_origins = []
         routed_ids = []
@@ -79,6 +82,9 @@ class RecommendationPipelineTests(unittest.TestCase):
 
     @staticmethod
     def reply(items):
+        weekly = {day: {"working_hours": [{"from": "00:00", "to": "24:00"}]}
+                  for day in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")}
+        items = [{**item, "schedule": item.get("schedule", weekly)} for item in items]
         return httpx.Response(200, json={"meta": {"code": 200},
                                          "result": {"total": len(items), "items": items}})
 
@@ -91,7 +97,7 @@ class RecommendationPipelineTests(unittest.TestCase):
         self.assertEqual(body["context_used"]["time_budget_minutes"], 30)
         self.assertEqual(body["context_used"]["providers"], ["2gis"])
         self.assertEqual(body["source"], "2GIS")
-        self.assertEqual(points, [("кафе", "71.4,51.09")])
+        self.assertEqual(points, [("кафе", "71.4,51.09")] * 2)
         self.assertEqual(origins, [(51.09, 71.4)])
         self.assertIn("2gis/123", scored)
         self.assertIn("2gis/123", routed)
@@ -100,9 +106,30 @@ class RecommendationPipelineTests(unittest.TestCase):
         self.assertEqual(item["poi"]["category"], "cafe")
         self.assertEqual(item["walking_minutes"], 5)
         self.assertLessEqual(item["walking_minutes"] + item["visit_minutes"], 30)
-        self.assertEqual(item["open_status"], "unknown")
+        self.assertEqual(item["open_status"], "open")
         self.assertIn("2GIS", item["why"])
         self.assertTrue(item["what_to_do"])
+
+    def test_query_time_is_used_without_an_explicit_start(self):
+        items = [{"id": "breakfast", "name": "Breakfast cafe",
+                  "point": {"lat": 51.091, "lon": 71.401},
+                  "rubrics": [{"name": "Кафе"}]}]
+        response, _, _, _, _ = self.call(self.reply(items), with_osm=True, payload={
+            "query": "Кофе возле Mega Silk Way в 9 утра", "lat": 51.09, "lon": 71.4,
+            "starts_at": None,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        context = response.json()["context_used"]
+        self.assertEqual(datetime.fromisoformat(context["starts_at"]).hour, 9)
+        self.assertEqual(context["starts_at_source"], "query")
+        self.assertEqual(context["origin"]["name"], "Mega Silk Way")
+
+    def test_conflicting_explicit_start_and_query_time_is_rejected(self):
+        response, _, _, _, _ = self.call(self.reply([]), payload={
+            "query": "Кофе возле Mega Silk Way в 9 утра", "lat": 51.09, "lon": 71.4,
+        })
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("Время в запросе отличается", response.json()["detail"])
 
     def test_named_origin_precedes_2gis_and_routing(self):
         items = [{"id": "park", "name": "EXPO park", "point": {"lat": 51.091, "lon": 71.408},
@@ -134,7 +161,7 @@ class RecommendationPipelineTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 200, response.text)
         missing = " ".join(response.json()["recommendations"][0]["missing_information"])
-        self.assertIn("Уровень шума", missing)
+        self.assertIn("Тишина", missing)
         self.assertIn("розеток", missing)
 
     def test_info_attributes_change_ranking_and_ground_explanation(self):
@@ -230,10 +257,13 @@ class RecommendationPipelineTests(unittest.TestCase):
 
     def test_flight_constraints_apply_to_2gis_candidate(self):
         items = [{"id": "123", "name": "2GIS cafe", "point": {"lat": 51.091, "lon": 71.401}}]
-        departure = datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(hours=3)
+        daytime = (datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(days=1)).replace(
+            hour=13, minute=0, second=0, microsecond=0)
+        departure = daytime + timedelta(hours=3)
         response, _, _, routed, _ = self.call(self.reply(items), with_osm=False, airport=True,
                                                 payload={"query": "Кофе перед вылетом", "lat": 51.09,
-                                                         "lon": 71.4, "flight_departure_at": departure.isoformat(),
+                                                         "lon": 71.4, "starts_at": daytime.isoformat(),
+                                                         "flight_departure_at": departure.isoformat(),
                                                          "airport_arrival_buffer_minutes": 90})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertIn("2gis/123", routed)
@@ -253,7 +283,7 @@ class RecommendationPipelineTests(unittest.TestCase):
             "query": "С ребёнком: площадка или интерактивный музей", "lat": 51.09, "lon": 71.4,
         })
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual([query for query, _ in points], ["детская площадка", "музей"])
+        self.assertEqual([query for query, _ in points], ["детская площадка", "детская площадка", "музей", "музей"])
         self.assertEqual(set(routed), {"2gis/play", "2gis/museum"})
         self.assertIn("museum", {item["poi"]["id"].split("/")[-1]
                                  for item in response.json()["recommendations"]})

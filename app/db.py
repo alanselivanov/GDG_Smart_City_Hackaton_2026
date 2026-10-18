@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from app.attraction_facts import ATTRACTIONS, NUR_ALEM_FACT, VERIFIED_AT, name_matched_facts
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pois (
@@ -58,6 +60,20 @@ CREATE TABLE IF NOT EXISTS route_references (
   source_url TEXT NOT NULL,
   fetched_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS poi_facts (
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  fact_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  text_ru TEXT NOT NULL,
+  text_en TEXT NOT NULL,
+  text_kk TEXT NOT NULL,
+  action_ru TEXT NOT NULL,
+  action_en TEXT NOT NULL,
+  action_kk TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  verified_at TEXT NOT NULL,
+  PRIMARY KEY (poi_id, fact_key)
+);
 """
 
 
@@ -70,6 +86,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(self.path, timeout=30)
         con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys=ON")
         try:
             yield con
             con.commit()
@@ -78,8 +95,31 @@ class Database:
 
     def init(self) -> None:
         with self.connect() as con:
-            con.execute("PRAGMA foreign_keys=ON")
             con.executescript(SCHEMA)
+            self._sync_attraction_facts(con)
+
+    @staticmethod
+    def _sync_attraction_facts(con: sqlite3.Connection) -> None:
+        """Attach reviewed facts only when the current OSM object still matches."""
+        rows = con.execute("SELECT id,name,lat,lon FROM pois").fetchall()
+        matched = {row["id"] for row in rows if row["id"] in ATTRACTIONS and
+                   ATTRACTIONS[row["id"]]["name_contains"].casefold() in row["name"].casefold()}
+        dynamic = [(row["id"], fact) for row in rows
+                   for fact in name_matched_facts(row["name"], row["lat"], row["lon"])]
+        selected = [(poi_id, fact) for poi_id in matched for fact in ATTRACTIONS[poi_id]["facts"]]
+        selected.extend(dynamic)
+        source_urls = {fact["source_url"] for entry in ATTRACTIONS.values()
+                       for fact in entry["facts"]} | {NUR_ALEM_FACT["source_url"]}
+        con.execute("DELETE FROM poi_facts WHERE source_url IN ({})".format(
+            ",".join("?" for _ in source_urls)), tuple(sorted(source_urls)))
+        con.executemany(
+            """INSERT INTO poi_facts
+            (poi_id,fact_key,kind,text_ru,text_en,text_kk,action_ru,action_en,action_kk,source_url,verified_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            [(poi_id, fact["key"], fact["kind"], fact["ru"], fact["en"], fact["kk"],
+              fact["action_ru"], fact["action_en"], fact["action_kk"], fact["source_url"], VERIFIED_AT)
+             for poi_id, fact in selected],
+        )
 
     def upsert_pois(self, pois: list[dict]) -> int:
         now = datetime.now(timezone.utc).isoformat()
@@ -101,6 +141,7 @@ class Database:
             )
             con.execute("DELETE FROM pois WHERE fetched_at != ?", (now,))
             con.execute("DELETE FROM poi_embeddings WHERE poi_id NOT IN (SELECT id FROM pois)")
+            self._sync_attraction_facts(con)
             con.execute(
                 """INSERT INTO sync_state(source,last_success_at,count) VALUES('openstreetmap',?,?)
                 ON CONFLICT(source) DO UPDATE SET last_success_at=excluded.last_success_at,
@@ -112,11 +153,16 @@ class Database:
     def all_pois(self) -> list[dict]:
         with self.connect() as con:
             rows = con.execute("SELECT * FROM pois").fetchall()
+            fact_rows = con.execute("SELECT * FROM poi_facts ORDER BY poi_id,fact_key").fetchall()
+        by_poi: dict[str, list[dict]] = {}
+        for fact in fact_rows:
+            by_poi.setdefault(fact["poi_id"], []).append(dict(fact))
         result = []
         for row in rows:
             item = dict(row)
             item["names"] = json.loads(item.pop("names_json"))
             item["tags"] = json.loads(item.pop("tags_json"))
+            item["facts"] = by_poi.get(item["id"], [])
             result.append(item)
         return result
 

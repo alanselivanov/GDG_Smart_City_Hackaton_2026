@@ -26,14 +26,30 @@ _MENTION = re.compile(
     r"(?iu)(?:^|[\s,.;])(?:я\s+)?(?:сейчас\s+)?(?:нахожусь\s+)?"
     r"(?:возле|около|у(?!\s+меня\b)|рядом\s+с|неподал[её]ку\s+от|near|by|at)\s+"
     r"(?:(?:здания|здании|трц|тц|музея|парка|мечети)\s+)?"
-    r"(?P<place>[^,;.!?—–]+)"
+    r"(?P<place>[^,;:.!?—–]+)"
 )
 _OTHER_MENTION = re.compile(
     r"(?iu)(?:^|[\s,.;])(?:я\s+)?(?:сейчас\s+)?(?:нахожусь\s+)?"
-    r"(?:в|на|inside)\s+(?:здании|трц|тц|музее|парке)\s+(?P<place>[^,;.!?—–]+)"
+    r"(?:в|на|inside)\s+(?:здании|трц|тц|музее|парке)\s+(?P<place>[^,;:.!?—–]+)"
 )
 _TAIL = re.compile(r"(?iu)\s+(?:(?:и\s+)?(?:хочу|ищу|планирую)|подскажите|посоветуйте|что\s+посоветуете|where|want\s+to)\b")
+_TIME_TAIL = re.compile(
+    r"(?iu)\s+(?:в\s+\d{1,2}(?::\d{2})?\s*(?:утра|дня|вечера|ночи)|"
+    r"в\s+\d{1,2}:\d{2}|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|"
+    r"in\s+the\s+(?:morning|afternoon|evening)\b|"
+    r"сегодня\b|завтра\b|утром\b|днём\b|днем\b|вечером\b|ночью\b)"
+)
 _THERE = re.compile(r"(?iu)\b(?:я\s+)?(?:сейчас\s+)?(?:там|there)\b")
+_TIME_AFTER_AROUND = re.compile(
+    r"(?iu)^(?:\d|час(?:а|ов)?\b|минут|полчас|полутора?\b|пары?\s+час)"
+)
+_PLACE_ALIASES = {
+    "mega silkway": "Mega Silk Way",
+    "меги силквей": "Mega Silk Way",
+    "мега силквей": "Mega Silk Way",
+    "меги силк вей": "Mega Silk Way",
+    "мега силк вей": "Mega Silk Way",
+}
 
 
 def normalize_name(value: str) -> str:
@@ -41,18 +57,34 @@ def normalize_name(value: str) -> str:
     return " ".join(re.findall(r"[^\W_]+", text, flags=re.UNICODE))
 
 
+def canonical_place_name(value: str) -> str:
+    return _PLACE_ALIASES.get(normalize_name(value), value)
+
+
 def mentioned_place(query: str) -> str | None:
     for pattern in (_MENTION, _OTHER_MENTION):
         match = pattern.search(query)
         if match:
-            value = _TAIL.split(match.group("place"), 1)[0].strip(" \"'«»()")
+            value = _TIME_TAIL.split(_TAIL.split(match.group("place"), 1)[0], 1)[0].strip(" \"'«»()")
+            if match.group(0).casefold().lstrip().startswith("около ") and _TIME_AFTER_AROUND.match(value):
+                continue
             return value[:120] or None
     return None
 
 
 def _local_place(name: str, pois: list[dict], request: RecommendRequest) -> dict | None:
-    key = normalize_name(name)
+    key = normalize_name(canonical_place_name(name))
     matches = [poi for poi in pois if key in {normalize_name(value) for value in poi["names"].values()}]
+    if not matches:
+        words = key.split()
+        # Match inflected, abbreviated names such as "Национального музея" to
+        # "Национальный музей Республики Казахстан", but never a generic one-word name.
+        if len(words) >= 2 and all(len(word) >= 4 for word in words):
+            matches = [poi for poi in pois if any(
+                len(candidate_words := normalize_name(value).split()) >= len(words)
+                and all(left[:4] == right[:4] for left, right in zip(words, candidate_words))
+                for value in poi["names"].values()
+            )]
     if not matches:
         return None
     if len(matches) > 1:
@@ -134,5 +166,5 @@ async def resolve_origin(request: RecommendRequest, pois: list[dict], db: Databa
         raise LocationError("Provide device lat/lon or mention a starting place in query", 422)
     place = _local_place(name, pois, request)
     if place is None:
-        place = await _external_place(name, request.language, db, config)
+        place = await _external_place(canonical_place_name(name), request.language, db, config)
     return {**place, "mentioned_name": name, "resolved_from": kind}

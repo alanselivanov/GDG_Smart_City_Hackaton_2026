@@ -18,9 +18,11 @@ from app.ingest import IngestError, refresh, refresh_airport_reference
 from app.models import (Category, GroupRecommendRequest, Language, PoiOut, PrimaryRecommendRequest, RecommendRequest,
                         RecommendResponse, TwoGisNearbyRequest, TwoGisNearbyResponse)
 from app.recommend import (ASTANA_TZ, candidate_pois, display_name, distance_m, effective_max_travel, generic_name,
-                           infer_budget, infer_flight_minutes, is_before_flight, localized_description, rank)
+                           infer_budget, infer_flight_minutes, is_before_flight, localized_description,
+                           localized_facts, night_intent, NIGHT_TERMS, rank)
 from app.routing import RoutingError, airport_transfers, pedestrian_matrix
 from app.twogis import TwoGisError, as_candidate, nearby as twogis_nearby
+from app.time_intent import infer_start
 
 
 def create_app(config: Settings = settings) -> FastAPI:
@@ -110,7 +112,8 @@ def create_app(config: Settings = settings) -> FastAPI:
         found.sort(key=lambda item: (item[0], item[1]["id"]))
         return [PoiOut(**{**poi, "name": display_name(poi, language),
                           "name_is_generic": generic_name(poi),
-                          "description": localized_description(poi, language), "distance_m": d})
+                          "description": localized_description(poi, language),
+                          "facts": localized_facts(poi, language), "distance_m": d})
                 for d, poi in found[:limit]]
 
     @app.get("/v1/pois/search", response_model=list[PoiOut])
@@ -129,7 +132,8 @@ def create_app(config: Settings = settings) -> FastAPI:
             scores[poi["id"]] + (0.3 if any(name.casefold().startswith(needle) for name in poi["names"].values()) else 0)))
         return [PoiOut(**{**poi, "name": display_name(poi, language),
                           "name_is_generic": generic_name(poi),
-                          "description": localized_description(poi, language)}) for poi in found[:limit]]
+                          "description": localized_description(poi, language),
+                          "facts": localized_facts(poi, language)}) for poi in found[:limit]]
 
     async def recommend(request: RecommendRequest | GroupRecommendRequest,
                         include_twogis: bool = False) -> RecommendResponse:
@@ -143,9 +147,33 @@ def create_app(config: Settings = settings) -> FastAPI:
                     raise HTTPException(status_code=422, detail="Requested time must be between 20 and 360 minutes")
                 request = request.model_copy(update={"time_budget_minutes": inferred})
         now = datetime.now(ASTANA_TZ)
+        start_was_explicit = request.starts_at is not None
+        try:
+            stated_start = infer_start(request.query, now)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if start_was_explicit and stated_start and any(char.isdigit() for char in stated_start[1]):
+            difference = abs((request.starts_at.astimezone(ASTANA_TZ) - stated_start[0]).total_seconds())
+            if difference > 5 * 60:
+                raise HTTPException(status_code=422, detail={
+                    "ru": "Время в запросе отличается от выбранного времени начала. Укажите одно время.",
+                    "en": "The time in the query conflicts with the selected start time. Use one time.",
+                    "kk": "Сұраудағы уақыт таңдалған басталу уақытына сәйкес келмейді. Бір уақытты көрсетіңіз.",
+                }[request.language])
+        inferred_start = None if start_was_explicit else stated_start
+        if inferred_start:
+            request = request.model_copy(update={"starts_at": inferred_start[0]})
         if request.starts_at and not now - timedelta(minutes=5) <= request.starts_at <= now + timedelta(days=7):
             raise HTTPException(status_code=422, detail="starts_at must be from now to 7 days ahead")
         start = request.starts_at or now
+        if request.starts_at is None and 6 <= now.hour < 22 and any(
+            term in request.query.casefold() for term in NIGHT_TERMS
+        ):
+            raise HTTPException(status_code=422, detail={
+                "ru": "Для ночного сценария укажите starts_at с датой и часовым поясом.",
+                "en": "Set starts_at with a date and timezone for a night request.",
+                "kk": "Түнгі сұрау үшін күні мен уақыт белдеуі көрсетілген starts_at енгізіңіз.",
+            }[request.language])
         flight_requested = request.flight_departure_at is not None or is_before_flight(request.query)
         departure_source = None
         if flight_requested:
@@ -191,16 +219,28 @@ def create_app(config: Settings = settings) -> FastAPI:
                 # the same start, including when the device is elsewhere.
                 searches = [request.query]
                 lowered = request.query.casefold()
+                if night_intent(request.query, start) and not any(
+                    term in lowered for term in NIGHT_TERMS
+                ):
+                    searches[0] = "ночью " + request.query
                 if any(term in lowered for term in ("площадк", "playground", "ойын алаң")) and any(
                     term in lowered for term in ("музе", "museum", "мұраж")
                 ):
                     searches.append("музей")
+                if origin and any(term in (origin.get("name") or "").casefold() for term in ("экспо", "expo")) and any(
+                    term in lowered for term in ("необыч", "unusual", "ерекше")
+                ):
+                    searches.append("Нур-Алем")
+                search_lat = (sum(person.lat for person in request.participants) / len(request.participants)
+                              if group else request.lat)
+                search_lon = (sum(person.lon for person in request.participants) / len(request.participants)
+                              if group else request.lon)
                 errors = 0
                 for search in searches:
                     try:
                         result = await twogis_nearby(TwoGisNearbyRequest(
-                            query=search, lat=request.lat, lon=request.lon, language=request.language,
-                        ), config)
+                            query=search, lat=search_lat, lon=search_lon, language=request.language,
+                        ), config, open_at=start)
                     except TwoGisError:
                         errors += 1
                         continue
@@ -241,18 +281,16 @@ def create_app(config: Settings = settings) -> FastAPI:
         except RoutingError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         recommendations, notices, start = rank(candidates, request, routes, scores, transfer_routes)
-        if include_twogis and recommendations:
-            selected_sources = {"2gis" if item.poi.id.startswith("2gis/") else "osm"
-                                for item in recommendations}
-            source_name = "2GIS" if selected_sources == {"2gis"} else "OSM/2GIS" if len(selected_sources) == 2 else "OSM"
-            notices = [notice.replace("OSM", source_name) for notice in notices]
-        used_llm = await enhance(recommendations, request.language, config)
+        await enhance(recommendations, request.language, config, request.query, start)
+        generated_count = sum(rec.text_source == "llm_verified" for rec in recommendations)
         context = {
             "query": request.query,
             "language": request.language,
             "time_budget_minutes": request.time_budget_minutes,
             "max_travel_minutes": effective_max_travel(request),
             "starts_at": start.isoformat(),
+            "starts_at_source": ("query" if inferred_start else "starts_at" if start_was_explicit
+                                 else "current_time"),
             "categories": request.categories,
             "exclude_categories": request.exclude_categories,
             "interests": [person.interests for person in request.participants] if group else request.interests,
@@ -263,8 +301,12 @@ def create_app(config: Settings = settings) -> FastAPI:
             "embedding_model": config.embedding_model if request.query else None,
             "distance_method": "valhalla_osm_pedestrian_matrix",
             "routing_provider": config.routing_url,
-            "llm_text_policy": "server_verified_options_only",
+            "llm_text_policy": "generated_from_catalog_facts_then_verified",
+            "llm_generated_count": generated_count,
         }
+        if inferred_start:
+            context["time_interpretation"] = {"phrase": inferred_start[1],
+                                              "local_time": inferred_start[0].isoformat()}
         if include_twogis:
             context.update({
                 "providers": [provider for provider, used in (("osm", len(pois) > twogis_count),
@@ -300,7 +342,8 @@ def create_app(config: Settings = settings) -> FastAPI:
                                  context_used=context, source=source,
                                  source_license_url=("https://www.openstreetmap.org/copyright" if sources != {"2gis"}
                                                      else license_urls["2gis"]),
-                                 generated_with="llm_verified" if used_llm else "grounded_templates",
+                                 generated_with=("mixed" if 0 < generated_count < len(recommendations) else
+                                                 "llm_verified" if generated_count else "grounded_templates"),
                                  notices=notices)
 
     @app.post("/v1/recommendations", response_model=RecommendResponse)
@@ -314,7 +357,7 @@ def create_app(config: Settings = settings) -> FastAPI:
 
     @app.post("/v1/group/recommendations", response_model=RecommendResponse)
     async def group_recommendations(request: GroupRecommendRequest):
-        return await recommend(request)
+        return await recommend(request, include_twogis=True)
 
     @app.post("/v1/2gis/recommendations", response_model=TwoGisNearbyResponse)
     async def twogis_recommendations(request: TwoGisNearbyRequest):

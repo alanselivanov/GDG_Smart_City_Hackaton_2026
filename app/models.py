@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 Language = Literal["ru", "kk", "en"]
 Category = Literal["cafe", "food", "nightlife", "culture", "museum", "landmark",
                    "viewpoint", "park", "family", "activity", "shopping"]
+Requirement = Literal["sockets", "quiet", "interactive"]
 
 
 class Location(BaseModel):
@@ -33,6 +34,8 @@ class RecommendBase(BaseModel):
     airport_transfer_mode: Literal["auto", "pedestrian"] = "auto"
     categories: list[Category] = Field(default_factory=list, max_length=11)
     exclude_categories: list[Category] = Field(default_factory=list, max_length=11)
+    must_have: list[Requirement] = Field(default_factory=list, max_length=3,
+                                          description="Explicit features to verify when possible")
     limit: int = Field(default=3, ge=1, le=3)
 
     @field_validator("query")
@@ -84,6 +87,14 @@ class TwoGisAttributeGroup(BaseModel):
     attributes: list[TwoGisAttribute] = Field(default_factory=list)
 
 
+class PoiFact(BaseModel):
+    key: str
+    kind: str
+    text: str
+    source_url: str
+    verified_at: str
+
+
 class PoiOut(BaseModel):
     id: str
     name: str
@@ -102,6 +113,7 @@ class PoiOut(BaseModel):
     attributes_language: Language | None = None
     rating: float | None = None
     review_count: int | None = None
+    facts: list[PoiFact] = Field(default_factory=list)
 
 
 class Recommendation(BaseModel):
@@ -114,8 +126,10 @@ class Recommendation(BaseModel):
     open_status_reason: str
     why: str
     what_to_do: str
-    text_source: Literal["generated_from_poi"] = "generated_from_poi"
+    text_source: Literal["grounded_fallback", "llm_verified"] = "grounded_fallback"
     missing_information: list[str] = Field(default_factory=list)
+    evidence: list[PoiFact] = Field(default_factory=list)
+    requirement_status: dict[Requirement, Literal["confirmed", "unknown"]] = Field(default_factory=dict)
     airport_transfer_minutes: int | None = None
     airport_transfer_distance_m: int | None = None
     latest_leave_for_airport_at: datetime | None = None
@@ -132,7 +146,7 @@ class RecommendResponse(BaseModel):
     context_used: dict
     source: str = "© OpenStreetMap contributors (ODbL), via Overpass API"
     source_license_url: str = "https://www.openstreetmap.org/copyright"
-    generated_with: Literal["grounded_templates", "llm_verified"]
+    generated_with: Literal["grounded_templates", "llm_verified", "mixed"]
     notices: list[str]
 
 

@@ -1,15 +1,17 @@
-"""One-page, one-request 2GIS Places search independent of the OSM dataset."""
+"""2GIS Places search independent of the OSM dataset."""
 from __future__ import annotations
 
 import math
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from app.config import Settings
 from app.models import (TwoGisAttribute, TwoGisAttributeGroup, TwoGisNearbyRequest,
                         TwoGisNearbyResponse, TwoGisPoi)
+from app.attraction_facts import NUR_ALEM_2GIS_BUILDING_ID, VERIFIED_AT, name_matched_facts
 from app.recommend import distance_m
 
 
@@ -34,6 +36,12 @@ def search_plan(query: str) -> tuple[str, int, str]:
         return "кафе", 1500, "cafe"
     if any(word in text for word in ("коф", "кафе", "coffee", "cafe", "ресторан", "restaurant")):
         return "кафе", 1500, "cafe"
+    if any(word in text for word in ("поесть", "поем", "поужин", "ужин", "обед", "завтрак", "позавтрак", "breakfast", "eat", "dinner", "lunch", "тамақ")):
+        return "ресторан", 3000, "food"
+    if any(word in text for word in ("прогул", "гулять", "парк", "walk", "park", "саябақ", "серуен")):
+        return "парк", 3000, "park"
+    if any(word in text for word in ("ночью", "ночное", "ночной", "ночная", "night", "түнгі", "түнде")):
+        return "бар", 3000, "nightlife"
     if any(word in text for word in ("музе", "museum", "мұраж")) and not any(
         word in text for word in ("площадк", "playground", "ойын алаң")
     ):
@@ -42,8 +50,6 @@ def search_plan(query: str) -> tuple[str, int, str]:
         return "детская площадка", 3000, "family"
     if any(word in text for word in ("музе", "museum", "мұраж")):
         return "музей", 3000, "museum"
-    if any(word in text for word in ("прогул", "гулять", "парк", "walk", "park", "саябақ", "серуен")):
-        return "парк", 3000, "park"
     # Other requests remain searchable, without pretending to infer a category.
     return query, 1500, "other"
 
@@ -174,8 +180,12 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
     rubric_text = " ".join(poi.rubrics).casefold()
     description = (poi.description or "").casefold()
     combined = f"{rubric_text} {poi.name.casefold()}"
+    matched_facts = name_matched_facts(poi.name, poi.lat, poi.lon, f"2gis/{poi.id}")
+    expo_sphere = poi.id == NUR_ALEM_2GIS_BUILDING_ID and bool(matched_facts)
     if any(word in combined for word in ("музе", "museum", "мұраж")):
         category = "museum"
+    elif re.search(r"(?iu)\b(?:бар|паб|ночной клуб|караоке|лаунж|pub|bar|night club)\b", combined):
+        category = "nightlife"
     elif any(word in combined for word in ("площадк", "playground", "ойын алаң")):
         category = "family"
     elif any(word in combined for word in ("парк", "сквер", "park", "саябақ")):
@@ -184,12 +194,16 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
         category = "cafe"
     elif any(word in combined for word in ("ресторан", "restaurant", "столов", "кухня", "dining")):
         category = "food"
+    elif matched_facts:
+        category = "landmark"
     elif intent in {"family", "park", "cafe", "museum"}:
         category = intent
     else:
         # An unknown catalog rubric cannot safely be assigned an activity.
         return {}
     tags = {"2gis:rubrics": rubric_text}
+    if expo_sphere:
+        tags["2gis:catalog_name"] = poi.name
     if poi.description:
         tags[f"description:{language}"] = poi.description
     if category == "museum" and any(phrase in f"{description} {poi.name.casefold()}" for phrase in (
@@ -197,11 +211,18 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
     )):
         tags["interactive"] = "yes"
     return {
-        "id": f"2gis/{poi.id}", "name": poi.name, "names": {"default": poi.name},
+        "id": f"2gis/{poi.id}", "name": "Нур-Алем" if expo_sphere else poi.name,
+        "names": ({"default": "Нур-Алем", "ru": "Нур-Алем", "en": "Nur Alem", "kk": "Нұр Әлем"}
+                  if expo_sphere else {"default": poi.name}),
         "description": poi.description, "category": category, "tags": tags,
         "attribute_groups": [group.model_dump() for group in poi.attribute_groups],
         "attributes_language": poi.attributes_language,
         "rating": poi.rating, "review_count": poi.review_count,
+        "facts": [{"fact_key": fact["key"], "kind": fact["kind"],
+                   "text_ru": fact["ru"], "text_en": fact["en"], "text_kk": fact["kk"],
+                   "action_ru": fact["action_ru"], "action_en": fact["action_en"],
+                   "action_kk": fact["action_kk"], "source_url": fact["source_url"],
+                   "verified_at": VERIFIED_AT} for fact in matched_facts],
         "lat": poi.lat, "lon": poi.lon,
         "opening_hours": schedule_to_opening_hours(poi.schedule), "website": None, "phone": None,
         "source_url": poi.source_url or f"https://2gis.kz/astana/{'firm' if poi.object_type == 'branch' else 'geo'}/{poi.id}",
@@ -209,7 +230,7 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
     }
 
 
-async def nearby(request: TwoGisNearbyRequest, config: Settings) -> TwoGisNearbyResponse:
+async def nearby(request: TwoGisNearbyRequest, config: Settings, *, open_at: datetime | None = None) -> TwoGisNearbyResponse:
     if not config.twogis_api_key:
         raise TwoGisError("2GIS_API_KEY is not configured")
     search_query, radius_m, intent = search_plan(request.query)
@@ -232,34 +253,51 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings) -> TwoGisNearby
     if intent in RUBRIC_IDS:
         params["rubric_id"] = RUBRIC_IDS[intent]
         params["region_id"] = ASTANA_REGION_ID
+    # A filtered search surfaces venues known to be open even when they are not
+    # among the ten closest. The unfiltered search also keeps places with no
+    # listed schedule. The planner verifies the entire visit afterwards.
+    queries = [params]
+    if open_at and intent in {"food", "cafe", "nightlife", "museum", "family"}:
+        local = open_at.astimezone(ZoneInfo("Asia/Almaty"))
+        work_time = f"{('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')[local.weekday()]},{local:%H:%M}"
+        queries.insert(0, {**params, "work_time": work_time})
+    all_items: list[dict] = []
+    total = None
     try:
         async with httpx.AsyncClient(timeout=config.twogis_timeout_seconds) as client:
-            response = await client.get(PLACES_URL, params=params)
-            # The request URL contains the key: never expose response/request exceptions.
-            if response.status_code in (401, 403):
-                raise TwoGisError("2GIS rejected the API key or field access")
-            if response.status_code == 429:
-                raise TwoGisError("2GIS request quota or rate limit reached")
-            response.raise_for_status()
-            data = response.json()
+            for search_params in queries:
+                response = await client.get(PLACES_URL, params=search_params)
+                # The request URL contains the key: never expose response/request exceptions.
+                if response.status_code in (401, 403):
+                    raise TwoGisError("2GIS rejected the API key or field access")
+                if response.status_code == 429:
+                    raise TwoGisError("2GIS request quota or rate limit reached")
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict) or not isinstance(data.get("meta"), dict):
+                    raise TwoGisError("2GIS returned an invalid response")
+                code = data["meta"].get("code")
+                if code == 404:
+                    continue
+                if code != 200:
+                    raise TwoGisError(f"2GIS search failed (code {code})")
+                result = data.get("result")
+                if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+                    raise TwoGisError("2GIS returned an invalid result list")
+                if search_params is params:
+                    total = result.get("total")
+                all_items.extend(item for item in result["items"][:10] if isinstance(item, dict))
     except httpx.HTTPError as exc:
         raise TwoGisError(f"2GIS request failed: {type(exc).__name__}") from None
     except ValueError:
         raise TwoGisError("2GIS returned invalid JSON") from None
-    if not isinstance(data, dict) or not isinstance(data.get("meta"), dict):
-        raise TwoGisError("2GIS returned an invalid response")
-    code = data["meta"].get("code")
-    if code == 404:
-        items, total = [], 0
-    elif code == 200:
-        result = data.get("result")
-        if not isinstance(result, dict) or not isinstance(result.get("items"), list):
-            raise TwoGisError("2GIS returned an invalid result list")
-        items, total = result["items"], result.get("total")
-    else:
-        raise TwoGisError(f"2GIS search failed (code {code})")
-    pois = [poi for item in items[:10] if isinstance(item, dict)
-            if (poi := _poi(item, request, radius_m, intent)) is not None]
+    pois = []
+    seen_ids = set()
+    for item in all_items:
+        poi = _poi(item, request, radius_m, intent)
+        if poi is not None and poi.id not in seen_ids:
+            pois.append(poi)
+            seen_ids.add(poi.id)
     if intent == "park":
         pois = _prefer_park_places(pois)
     return TwoGisNearbyResponse(
@@ -273,6 +311,7 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings) -> TwoGisNearby
             "region_id": params.get("region_id"),
             "distance_method": "straight_line_estimate",
             "catalog_locale": params["locale"],
+            "catalog_work_time": queries[0].get("work_time"),
         },
         total_found=total if isinstance(total, int) else None,
     )

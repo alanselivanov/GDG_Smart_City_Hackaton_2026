@@ -6,9 +6,9 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app.attributes import (attribute_score, average_check, fact_label, price_ceiling,
-                            relevant_facts)
-from app.models import GroupRecommendRequest, PoiOut, RecommendRequest, Recommendation
+from app.attributes import (attribute_for_requirement, attribute_score, average_check,
+                            distinctive_attribute, fact_label, price_ceiling, relevant_facts)
+from app.models import GroupRecommendRequest, PoiFact, PoiOut, RecommendRequest, Recommendation
 
 
 ASTANA_TZ = ZoneInfo("Asia/Almaty")
@@ -17,7 +17,7 @@ RULE = re.compile(r"^((?:Mo|Tu|We|Th|Fr|Sa|Su)(?:-(?:Mo|Tu|We|Th|Fr|Sa|Su))?(?:,
 
 KEYWORDS = {
     "cafe": ("коф", "кафе", "coffee", "cafe", "кофе", "кафе"),
-    "food": ("поесть", "ужин", "обед", "restaurant", "eat", "dinner", "тамақ"),
+    "food": ("поесть", "ужин", "обед", "завтрак", "позавтрак", "breakfast", "restaurant", "eat", "dinner", "тамақ"),
     "museum": ("музе", "museum", "мұражай", "экспозиц"),
     "park": ("парк", "прогул", "гулять", "walk", "nature", "саябақ", "серуен"),
     "family": ("ребён", "ребен", "деть", "детск", "child", "kids", "балалар", "бала"),
@@ -36,6 +36,8 @@ UNUSUAL_TERMS = ("необыч", "нестандарт", "unusual", "unique", "�
 INTERACTIVE_TERMS = ("интерактив", "interactive", "интерактивті")
 PLAYGROUND_TERMS = ("площадк", "playground", "ойын алаң")
 SIGHTSEEING_TERMS = ("достопримеч", "турист", "sightseeing", "tourist", "көрнекті")
+NIGHT_TERMS = ("ночью", "ночное", "ночной", "ночная", "поздно вечером", "after midnight",
+               "at night", "night out", "түнде", "түнгі")
 GENERIC_PLAYGROUND = {"ru": "Детская площадка", "en": "Playground", "kk": "Балалар алаңы"}
 FEATURE_LABELS = {
     "ru": {"artwork": "арт-объект", "memorial": "мемориал", "monument": "памятник",
@@ -64,21 +66,21 @@ CATEGORY_LABELS = {
            "activity": "белсенді демалыс орны", "shopping": "дүкен"},
 }
 ACTIVITIES = {
-    "ru": {"cafe": "Зайдите за напитком и отдохните.", "food": "Выберите блюдо и сделайте остановку на обед или ужин.",
+    "ru": {"cafe": "Зайдите за напитком и отдохните.", "food": "Выберите блюдо и поешьте здесь.",
            "nightlife": "Посмотрите меню и проведите здесь часть вечера.", "culture": "Посмотрите текущую программу на сайте места перед визитом.",
            "museum": "Уточните актуальные экспозиции и посетите музей.",
            "landmark": "Осмотрите место снаружи и сделайте фото.", "viewpoint": "Оцените вид и сделайте фото.",
            "park": "Прогуляйтесь в парке.", "family": "Проведите время на площадке с детьми.",
            "activity": "Уточните условия посещения и попробуйте доступную активность.",
            "shopping": "Пройдитесь по торговым рядам."},
-    "en": {"cafe": "Stop for a drink and a break.", "food": "Choose a meal and take a lunch or dinner break.",
+    "en": {"cafe": "Stop for a drink and a break.", "food": "Choose a meal and eat here.",
            "nightlife": "Check the menu and spend part of your evening here.", "culture": "Check the venue's current programme before visiting.",
            "museum": "Check current exhibitions and visit the museum.",
            "landmark": "See the site from outside and take a photo.", "viewpoint": "Enjoy the view and take a photo.",
            "park": "Take a walk in the park.", "family": "Spend some time at the playground with children.",
            "activity": "Check admission details and try an available activity.",
            "shopping": "Browse the shops."},
-    "kk": {"cafe": "Сусын алып, демалыңыз.", "food": "Тағам таңдап, түскі не кешкі асқа тоқтаңыз.",
+    "kk": {"cafe": "Сусын алып, демалыңыз.", "food": "Тағам таңдап, осы жерде тамақтаныңыз.",
            "nightlife": "Мәзірді қарап, кештің бір бөлігін осында өткізіңіз.",
            "culture": "Барар алдында мекеменің қазіргі бағдарламасын тексеріңіз.",
            "museum": "Қазіргі көрмелерді нақтылап, мұражайға барыңыз.",
@@ -90,23 +92,23 @@ ACTIVITIES = {
            "shopping": "Дүкендерді аралаңыз."},
 }
 NOTICES = {
-    "ru": {"unknown_hours": "Часы работы части мест неизвестны или имеют сложный формат; проверьте перед визитом.",
+    "ru": {"unknown_hours": "У части мест время работы не указано; неизвестно, открыты ли они сейчас. Проверьте перед визитом.",
            "walking": "Путь и время рассчитаны по пешеходной сети OSM; фактическое время зависит от темпа и условий на месте.",
-           "quiet": "Уровень шума не подтверждён данными OSM.",
-           "socket": "Наличие розеток часто не указано в OSM; уточните перед визитом.",
-           "interactive": "Интерактивность ближайших музеев в данных OSM не подтверждена; такие музеи не предлагаются как интерактивные.",
+           "quiet": "Уровень шума не подтверждён доступными данными.",
+           "socket": "Наличие розеток не определено; уточните перед визитом.",
+           "interactive": "Интерактивность ближайших музеев не подтверждена доступными данными.",
            "empty": "Подходящих подтверждённых мест не найдено. Увеличьте время или измените фильтры."},
-    "en": {"unknown_hours": "Some hours are missing or complex; check before visiting.",
+    "en": {"unknown_hours": "Some places have no listed hours; whether they are open is unknown. Check before visiting.",
            "walking": "Distance and time use the OSM pedestrian network; actual time depends on pace and local conditions.",
-           "quiet": "Noise level is not verified by OSM data.",
-           "socket": "Power outlet data is often missing in OSM; check before visiting.",
-           "interactive": "Interactive features at nearby museums are not confirmed in OSM; they are not presented as interactive.",
+           "quiet": "Noise level is not confirmed by the available data.",
+           "socket": "Power outlet availability is unknown; check before visiting.",
+           "interactive": "Interactive features at nearby museums are not confirmed by the available data.",
            "empty": "No verified matching places were found. Increase the time or change filters."},
-    "kk": {"unknown_hours": "Кейбір жұмыс уақыты белгісіз не күрделі; барар алдында тексеріңіз.",
+    "kk": {"unknown_hours": "Кейбір орындардың жұмыс уақыты көрсетілмеген; қазір ашық екені белгісіз. Барар алдында тексеріңіз.",
            "walking": "Қашықтық пен уақыт OSM жаяу жүру желісі бойынша есептелді; нақты уақыт жүру қарқыны мен жағдайға байланысты.",
-           "quiet": "Орынның тыныштығы OSM деректерімен расталмаған.",
-           "socket": "OSM-де розетка туралы дерек жиі жоқ; барар алдында нақтылаңыз.",
-           "interactive": "Жақын мұражайлардың интерактивті мүмкіндіктері OSM-де расталмаған; олар интерактивті деп ұсынылмайды.",
+           "quiet": "Орынның тыныштығы қолда бар деректермен расталмаған.",
+           "socket": "Розетканың бары анықталмаған; барар алдында нақтылаңыз.",
+           "interactive": "Жақын мұражайлардың интерактивті мүмкіндіктері қолда бар деректермен расталмаған.",
            "empty": "Сәйкес расталған орын табылмады. Уақытты ұзартыңыз не сүзгілерді өзгертіңіз."},
 }
 FLIGHT_NOTICE = {
@@ -184,6 +186,91 @@ def _preferences(query: str) -> tuple[set[str], bool, bool]:
         categories.discard("family")
         categories.add("cafe")
     return categories, any(term in lowered for term in SOCKET_TERMS), any(term in lowered for term in QUIET_TERMS)
+
+
+def night_intent(query: str, start: datetime) -> bool:
+    local = start.astimezone(ASTANA_TZ)
+    return (local.hour >= 22 or local.hour < 6) or any(
+        term in query.casefold() for term in NIGHT_TERMS)
+
+
+def night_category_allowed(category: str, walking: bool) -> bool:
+    return category in {"nightlife", "cafe", "food", "culture", "activity", "museum"} or (
+        walking and category in {"park", "landmark", "viewpoint"}
+    )
+
+
+def requested_requirements(request: RecommendRequest | GroupRecommendRequest) -> set[str]:
+    lowered = request.query.casefold()
+    requirements = set(request.must_have)
+    if any(term in lowered for term in SOCKET_TERMS) and not re.search(r"\b(?:без|without|no)\s+розет", lowered):
+        requirements.add("sockets")
+    if any(term in lowered for term in QUIET_TERMS):
+        requirements.add("quiet")
+    if any(term in lowered for term in INTERACTIVE_TERMS):
+        # "Playground or interactive museum" offers two alternative activities.
+        if not (any(term in lowered for term in PLAYGROUND_TERMS)
+                and any(term in lowered for term in ("музе", "museum", "мұраж"))):
+            requirements.add("interactive")
+    return requirements
+
+
+def localized_facts(poi: dict, language: str) -> list[PoiFact]:
+    return [PoiFact(key=fact["fact_key"], kind=fact["kind"],
+                    text=fact[f"text_{language}"], source_url=fact["source_url"],
+                    verified_at=fact["verified_at"])
+            for fact in poi.get("facts") or []]
+
+
+def chosen_fact(poi: dict, request: RecommendRequest | GroupRecommendRequest) -> dict | None:
+    facts = poi.get("facts") or []
+    if not facts:
+        return None
+    interactive = "interactive" in requested_requirements(request)
+    if interactive:
+        return next((fact for fact in facts if fact["kind"] == "interactive"), facts[0])
+    return next((fact for fact in facts if fact["kind"] == "distinctive"), facts[0])
+
+
+def requirement_confirmed(poi: dict, requirement: str) -> bool:
+    tags = poi["tags"]
+    if requirement == "sockets" and tags.get("socket:access") in {"yes", "customers"}:
+        return True
+    if requirement == "quiet" and tags.get("quiet") == "yes":
+        return True
+    if requirement == "interactive" and (
+        tags.get("interactive") in {"yes", "interactive"}
+        or any(fact["kind"] == "interactive" for fact in poi.get("facts") or [])
+    ):
+        return True
+    return attribute_for_requirement(poi, requirement) is not None
+
+
+def has_distinctive_evidence(poi: dict, language: str) -> bool:
+    if any(fact["kind"] == "distinctive" for fact in poi.get("facts") or []):
+        return True
+    attribute = distinctive_attribute(poi)
+    return attribute is not None and fact_label(attribute, language) is not None
+
+
+def interest_match(person, poi: dict) -> bool:
+    interests = set(person.interests)
+    category = poi["category"]
+    return not interests or category in interests or ("culture" in interests and category == "museum")
+
+
+def same_place(first: Recommendation, second: Recommendation) -> bool:
+    if first.poi.category != second.poi.category or distance_m(
+        first.poi.lat, first.poi.lon, second.poi.lat, second.poi.lon
+    ) > 300:
+        return False
+
+    def words(name: str) -> set[str]:
+        normalized = re.sub(r"(?iu)\bрк\b", "республики казахстан", name.casefold())
+        return set(re.findall(r"(?iu)[^\W_]+", normalized))
+
+    left, right = words(first.poi.name), words(second.poi.name)
+    return bool(left and right) and len(left & right) / len(left | right) >= 0.6
 
 
 def is_before_flight(query: str) -> bool:
@@ -298,18 +385,20 @@ def display_name(poi: dict, language: str) -> str:
 def eligible_for_intent(poi: dict, request: RecommendRequest | GroupRecommendRequest) -> bool:
     lowered = request.query.casefold()
     category = poi["category"]
-    interactive = any(term in lowered for term in INTERACTIVE_TERMS)
-    if interactive and category == "museum" and poi["tags"].get("interactive") not in {"yes", "interactive"}:
+    if any(term in lowered for term in UNUSUAL_TERMS) and not has_distinctive_evidence(poi, request.language):
         return False
+    if "interactive" in requested_requirements(request):
+        if any(term in lowered for term in ("музе", "museum", "мұраж")) and category != "museum":
+            return False
+        if category not in {"museum", "activity", "family"}:
+            return False
     if request.categories:
         return True
     if any(term in lowered for term in PLAYGROUND_TERMS):
         museum_requested = any(term in lowered for term in ("музе", "museum", "мұраж"))
         return category == "family" or (category == "museum" and museum_requested)
     if any(term in lowered for term in UNUSUAL_TERMS):
-        return category in {"museum", "viewpoint"} or feature_kind(poi) in {
-            "artwork", "monument", "memorial", "attraction"
-        }
+        return category in {"museum", "viewpoint", "landmark", "park", "activity", "nightlife", "culture"}
     if any(term in lowered for term in SIGHTSEEING_TERMS):
         return category in {"landmark", "museum", "viewpoint", "park"}
     if any(term in lowered for term in STROLL_TERMS):
@@ -320,7 +409,32 @@ def eligible_for_intent(poi: dict, request: RecommendRequest | GroupRecommendReq
 
 
 def localized_description(poi: dict, language: str) -> str | None:
+    fact = next((fact for fact in poi.get("facts") or [] if fact["kind"] == "distinctive"), None)
+    if fact:
+        return fact[f"text_{language}"]
     return poi["tags"].get(f"description:{language}") or (poi["description"] if language == "ru" else None)
+
+
+def _sourced_food_activity(poi: dict, query: str, language: str, hour: int) -> str | None:
+    """A precise fallback action when free-form copy cannot be verified."""
+    if language != "ru" or poi["category"] not in {"cafe", "food"}:
+        return None
+    if any(term in query.casefold() for term in SOCKET_TERMS) and not requirement_confirmed(poi, "sockets"):
+        return "Уточните наличие розеток перед визитом и выберите блюдо или напиток на месте."
+    for item in relevant_facts(poi, query, hour):
+        label = item["name"].strip()
+        lowered = label.casefold()
+        tag = (item.get("tag") or "").casefold()
+        if 6 <= hour < 12 and ("завтрак" in lowered or "breakfast" in tag):
+            return "Посмотрите предложения на завтрак и уточните, доступны ли они к вашему приходу."
+        if "кухня" in lowered and lowered.endswith("ая кухня"):
+            cuisine = lowered[:-8] + "ой кухни"
+            return f"Выберите блюдо {cuisine} по меню на месте."
+        if ("menu" in tag and "kids" not in tag and "english" not in tag) or "шаверм" in lowered or "суши" in lowered or "рамен" in lowered:
+            return f"Посмотрите предложение «{label}» и выберите вариант на месте."
+        if "заказ столик" in lowered or "booking" in tag:
+            return "Уточните бронирование столика и выберите блюдо по меню."
+    return None
 
 
 def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendRequest,
@@ -332,8 +446,7 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
     group = isinstance(request, GroupRecommendRequest)
     lowered = request.query.casefold()
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
-    interactive = any(term in lowered for term in INTERACTIVE_TERMS)
-    _, wants_socket, wants_quiet = _preferences(request.query)
+    _, wants_socket, _ = _preferences(request.query)
     if price_ceiling(request.query) is not None and average_check(poi) is None:
         missing_price = {
             "ru": "Средний чек в источнике не указан; соответствие бюджету не подтверждено.",
@@ -342,7 +455,8 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
         }[language]
     else:
         missing_price = None
-    description = localized_description(poi, language)
+    reviewed_fact = chosen_fact(poi, request)
+    description = None if reviewed_fact else localized_description(poi, language)
     missing: list[str] = []
     if language == "ru":
         why = f"«{name}» — {label} по данным OSM; {distance} м и {walk} мин пешком от старта."
@@ -352,21 +466,15 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
             why += " Совпадает с вашими интересами."
         if description:
             why += f" Описание OSM: {description[:180].rstrip('. ')}."
-        else:
+        elif not reviewed_fact:
             missing.append("Подробное описание места в OSM не указано.")
         if poi["tags"].get("outdoor_seating") == "yes":
             why += " В OSM отмечены места на улице."
-        if unusual and not description:
+        if unusual and not description and not reviewed_fact and not distinctive_attribute(poi):
             why += " Чем именно место необычно, в OSM не указано."
-        if wants_quiet:
-            missing.append("Уровень шума в OSM не указан.")
         if wants_socket:
-            if poi["tags"].get("socket:access") in {"yes", "customers"}:
-                why += " Розетки отмечены в OSM."
-            else:
-                missing.append("Наличие розеток в OSM не подтверждено.")
-        if interactive and poi["category"] == "museum":
-            missing.append("Интерактивные экспонаты в OSM не подтверждены.")
+            if requirement_confirmed(poi, "sockets"):
+                why += " Наличие розеток подтверждено источником."
         if kind == "artwork":
             action = f"Осмотрите арт-объект «{name}»; на остановку заложено {visit} мин."
         elif kind in {"memorial", "monument"}:
@@ -391,21 +499,15 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
             why += " Matches your interests."
         if description:
             why += f" OSM description: {description[:180].rstrip('. ')}."
-        else:
+        elif not reviewed_fact:
             missing.append("OSM does not provide a detailed description.")
         if poi["tags"].get("outdoor_seating") == "yes":
             why += " OSM lists outdoor seating."
-        if unusual and not description:
+        if unusual and not description and not reviewed_fact and not distinctive_attribute(poi):
             why += " OSM does not explain what makes it unusual."
-        if wants_quiet:
-            missing.append("Noise level is not listed in OSM.")
         if wants_socket:
-            if poi["tags"].get("socket:access") in {"yes", "customers"}:
-                why += " OSM lists power outlets."
-            else:
-                missing.append("Power outlets are not confirmed in OSM.")
-        if interactive and poi["category"] == "museum":
-            missing.append("Interactive exhibits are not confirmed in OSM.")
+            if requirement_confirmed(poi, "sockets"):
+                why += " Power outlets are confirmed by the source."
         if kind == "artwork":
             action = f"Take a look at the artwork {name}; allow about {visit} min."
         elif kind in {"memorial", "monument"}:
@@ -430,21 +532,15 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
             why += " Қызығушылығыңызға сай."
         if description:
             why += f" OSM сипаттамасы: {description[:180].rstrip('. ')}."
-        else:
+        elif not reviewed_fact:
             missing.append("OSM-де орынның толық сипаттамасы көрсетілмеген.")
         if poi["tags"].get("outdoor_seating") == "yes":
             why += " OSM-де ашық ауадағы орындар көрсетілген."
-        if unusual and not description:
+        if unusual and not description and not reviewed_fact and not distinctive_attribute(poi):
             why += " Бұл орынның несімен ерекше екені OSM-де көрсетілмеген."
-        if wants_quiet:
-            missing.append("Шу деңгейі OSM-де көрсетілмеген.")
         if wants_socket:
-            if poi["tags"].get("socket:access") in {"yes", "customers"}:
-                why += " Розетка OSM-де көрсетілген."
-            else:
-                missing.append("Розетка бары OSM-де расталмаған.")
-        if interactive and poi["category"] == "museum":
-            missing.append("Интерактивті экспонаттар OSM-де расталмаған.")
+            if requirement_confirmed(poi, "sockets"):
+                why += " Розетканың бары дереккөзде расталған."
         if kind == "artwork":
             action = f"«{name}» өнер нысанын көріңіз; шамамен {visit} минут бөліңіз."
         elif kind in {"memorial", "monument"}:
@@ -465,13 +561,56 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
         why = why.replace("OSM", "2GIS")
         action = action.replace("OSM", "2GIS")
         missing = [item.replace("OSM", "2GIS") for item in missing]
-        labels = [label for item in relevant_facts(poi, request.query)
+        if not description and not reviewed_fact:
+            missing = [item for item in missing if not any(word in item for word in
+                       ("описание", "description", "сипаттамасы"))]
+            has_attributes = bool(poi.get("attribute_groups"))
+            missing.append({
+                "ru": ("Подробного описания в 2GIS нет; рекомендация основана на атрибутах 2GIS."
+                       if has_attributes else "Описание и атрибуты места в 2GIS не указаны."),
+                "en": ("2GIS has no detailed description; this recommendation uses its listed attributes."
+                       if has_attributes else "2GIS lists neither a description nor venue attributes."),
+                "kk": ("2GIS-те толық сипаттама жоқ; ұсыныс 2GIS атрибуттарына негізделген."
+                       if has_attributes else "2GIS-те сипаттама да, атрибуттар да көрсетілмеген."),
+            }[language])
+        local_hour = (request.starts_at or datetime.now(ASTANA_TZ)).astimezone(ASTANA_TZ).hour
+        labels = [label for item in relevant_facts(poi, request.query, local_hour)
                   if (label := fact_label(item, language))][:3]
+        if unusual and not reviewed_fact and (special := distinctive_attribute(poi)):
+            special_label = fact_label(special, language)
+            if special_label and special_label not in labels:
+                labels.insert(0, special_label)
+                labels = labels[:3]
         if labels:
             details = "; ".join(labels)
             why += {"ru": f" Атрибуты 2GIS: {details}.",
                     "en": f" 2GIS venue details: {details}.",
                     "kk": f" 2GIS нысан деректері: {details}."}[language]
+    if reviewed_fact:
+        why += " " + reviewed_fact[f"text_{language}"]
+        action = reviewed_fact[f"action_{language}"]
+    if poi["category"] == "cafe" and "food" in _preferences(request.query)[0]:
+        action = {
+            "ru": "Выберите блюдо и перекусите здесь.",
+            "en": "Choose a dish and eat here.",
+            "kk": "Тағам таңдап, осы жерде тамақтаныңыз.",
+        }[language]
+    if poi["id"].startswith("2gis/"):
+        local_hour = (request.starts_at or datetime.now(ASTANA_TZ)).astimezone(ASTANA_TZ).hour
+        action = _sourced_food_activity(poi, request.query, language, local_hour) or action
+    for requirement in sorted(requested_requirements(request)):
+        if requirement_confirmed(poi, requirement):
+            continue
+        note = {
+            "sockets": {"ru": "Наличие розеток не определено.", "en": "Power outlets are not confirmed.",
+                        "kk": "Розетканың бары анықталмаған."},
+            "quiet": {"ru": "Тишина в этом месте не подтверждена.", "en": "Quiet conditions are not confirmed.",
+                      "kk": "Бұл жердің тыныштығы расталмаған."},
+            "interactive": {"ru": "Интерактивность не подтверждена.", "en": "Interactive features are not confirmed.",
+                            "kk": "Интерактивтілік расталмаған."},
+        }[requirement][language]
+        if note not in missing:
+            missing.append(note)
     if missing_price:
         missing.append(missing_price)
     return why, action, missing
@@ -485,6 +624,8 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
     lowered = request.query.casefold()
     walking = any(term in lowered for term in WALK_TERMS)
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
+    requirements = requested_requirements(request)
+    night = night_intent(request.query, request.starts_at or datetime.now(ASTANA_TZ))
     max_price = price_ceiling(request.query)
     candidates = []
     for poi in pois:
@@ -497,6 +638,8 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
             continue
         if not eligible_for_intent(poi, request):
             continue
+        if night and not night_category_allowed(category, walking):
+            continue
         if walking and not request.categories and category == "shopping":
             continue
         direct = max(distance_m(person.lat, person.lon, poi["lat"], poi["lon"])
@@ -505,9 +648,12 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
             continue
         if direct > max_travel * 125:
             continue
-        interests = sum(not person.interests or category in person.interests for person in participants) / len(participants)
+        interests = sum(interest_match(person, poi) for person in participants) / len(participants)
         score = (12 * semantic_scores.get(poi["id"], 0) + 3 * (category in desired)
                  + interests + attribute_score(poi, request.query))
+        if requirements:
+            confirmed = sum(requirement_confirmed(poi, requirement) for requirement in requirements)
+            score += 20 if confirmed == len(requirements) else 2 * confirmed
         kind = feature_kind(poi)
         if unusual:
             score += {"artwork": 3.5, "memorial": 1.5, "monument": 2.0,
@@ -532,6 +678,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
     lowered = request.query.casefold()
     walking = any(term in lowered for term in WALK_TERMS)
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
+    night = night_intent(request.query, start)
+    requirements = requested_requirements(request)
     max_price = price_ceiling(request.query)
     near_flight = request.flight_departure_at is not None
     group = isinstance(request, GroupRecommendRequest)
@@ -548,6 +696,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         if max_price is not None and (listed := average_check(poi)) is not None and listed > max_price:
             continue
         if not eligible_for_intent(poi, request):
+            continue
+        if night and not night_category_allowed(category, walking):
             continue
         if walking and not request.categories and category == "shopping":
             continue
@@ -583,26 +733,33 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                     available_visit)
         arrival = start + timedelta(minutes=longest)
         status = opening_status(poi["opening_hours"], arrival, visit)
-        if status == "closed":
+        if status == "closed" or (status == "unknown" and poi["opening_hours"]):
             continue
-        matches = [not person.interests or category in person.interests for person in participants]
+        matches = [interest_match(person, poi) for person in participants]
         interest_score = sum(matches) / len(matches)
         # Query/category relevance and group fairness outweigh pure proximity.
         score = 4.0 * (category in desired) + 2.5 * interest_score
         if group:
-            score += 1.5 * min(matches)
+            person_utility = [int(match) - walk / max_travel for match, walk in zip(matches, walks)]
+            score += 30 if all(matches) else 10 if sum(matches) >= math.ceil(len(matches) / 2) else 0
+            score += 12 * min(person_utility) + 6 * interest_score
         score += 2.5 - longest / 15
         if semantic_scores:
             score += 10 * semantic_scores.get(poi["id"], 0)
         score += attribute_score(poi, request.query)
+        if poi.get("attribute_groups") and category in desired:
+            # A venue with catalog details can support a useful, specific
+            # explanation; keep it competitive with sparse nearby OSM cards.
+            score += min(6.0, 1.5 * len(relevant_facts(poi, request.query, start.hour)))
         score += 0.7 if status == "open" else 0
-        score += 0.6 if poi["description"] else 0
-        if wants_socket and poi["tags"].get("socket:access") in {"yes", "customers"}:
+        score += 3 if poi.get("facts") else 0.6 if poi["description"] else 0
+        if wants_socket and requirement_confirmed(poi, "sockets"):
             score += 4
+        if requirements:
+            score += 25 if all(requirement_confirmed(poi, item) for item in requirements) else \
+                2 * sum(requirement_confirmed(poi, item) for item in requirements)
         if unusual:
-            score += {"artwork": 4, "monument": 2, "memorial": 1.5,
-                      "attraction": 0.5}.get(feature_kind(poi), 0)
-            score += 1.5 if category == "museum" else 0
+            score += 4 if poi.get("facts") else 2 if distinctive_attribute(poi) else 0
         if walking and category == "park":
             score += 2
         if generic_name(poi):
@@ -613,9 +770,9 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
             score += 3
         why, action, missing = _explain_and_act(poi, request, round(max(distances)), longest, visit, matches)
         if status == "unknown":
-            missing.append({"ru": "Актуальное время работы не подтверждено.",
-                            "en": "Current opening hours are not confirmed.",
-                            "kk": "Қазіргі жұмыс уақыты расталмаған."}[language])
+            missing.append({"ru": "Время работы не указано; неизвестно, открыто ли место сейчас.",
+                            "en": "No opening hours are listed; whether this place is open now is unknown.",
+                            "kk": "Жұмыс уақыты көрсетілмеген; қазір ашық екені белгісіз."}[language])
         if latest_leave is not None:
             action += {
                 "ru": f" В аэропорт отправляйтесь не позднее {latest_leave:%H:%M}.",
@@ -623,6 +780,36 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                 "kk": f" Әуежайға {latest_leave:%H:%M} уақытынан кешікпей аттаныңыз.",
             }[language]
         name = _name(poi, language)
+        evidence = localized_facts(poi, language)
+        for requirement in requirements:
+            attribute = attribute_for_requirement(poi, requirement)
+            if attribute:
+                evidence_text = {
+                    "sockets": {"ru": "Розетки указаны в 2GIS.", "en": "Power outlets are listed in 2GIS.",
+                                "kk": "Розеткалар 2GIS-те көрсетілген."},
+                    "quiet": {"ru": "Тихая зона указана в 2GIS.", "en": "A quiet area is listed in 2GIS.",
+                              "kk": "Тыныш аймақ 2GIS-те көрсетілген."},
+                    "interactive": {"ru": "Интерактивные объекты указаны в 2GIS.",
+                                    "en": "Interactive features are listed in 2GIS.",
+                                    "kk": "Интерактивті нысандар 2GIS-те көрсетілген."},
+                }[requirement][language]
+                evidence.append(PoiFact(
+                    key=f"2gis:{attribute.get('tag') or attribute.get('id') or requirement}",
+                    kind=requirement, text=evidence_text, source_url=poi["source_url"],
+                    verified_at=poi["fetched_at"],
+                ))
+            elif requirement == "sockets" and poi["tags"].get("socket:access") in {"yes", "customers"}:
+                evidence.append(PoiFact(key="osm:socket:access", kind="sockets",
+                                        text={"ru": "Розетки отмечены в OSM.",
+                                              "en": "Power outlets are listed in OSM.",
+                                              "kk": "OSM-де розеткалар көрсетілген."}[language],
+                                        source_url=poi["source_url"], verified_at=poi["fetched_at"]))
+        if unusual and poi["id"].startswith("2gis/") and (special := distinctive_attribute(poi)):
+            label = fact_label(special, language)
+            if label:
+                evidence.append(PoiFact(key=f"2gis:{special.get('tag') or 'distinctive'}",
+                                        kind="distinctive", text=label,
+                                        source_url=poi["source_url"], verified_at=poi["fetched_at"]))
         rec = Recommendation(
             poi=PoiOut(id=poi["id"], name=name, category=category, lat=poi["lat"], lon=poi["lon"],
                        description=localized_description(poi, language), opening_hours=poi["opening_hours"],
@@ -631,16 +818,19 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                        name_is_generic=generic_name(poi),
                        attribute_groups=poi.get("attribute_groups") or [],
                        attributes_language=poi.get("attributes_language"),
-                       rating=poi.get("rating"), review_count=poi.get("review_count")),
+                       rating=poi.get("rating"), review_count=poi.get("review_count"),
+                       facts=localized_facts(poi, language)),
             distance_m=round(max(distances)), walking_minutes=longest,
             walking_seconds=max(seconds), visit_minutes=visit,
             open_status=status,
             open_status_reason=(
                 {"ru": "По расписанию источника", "en": "According to source hours", "kk": "Дереккөз кестесіне сәйкес"}[language]
                 if status == "open" else
-                {"ru": "Часы работы не подтверждены", "en": "Hours unverified", "kk": "Жұмыс уақыты расталмаған"}[language]
+                {"ru": "Время работы не указано; открытость неизвестна", "en": "Hours not listed; open status unknown", "kk": "Жұмыс уақыты көрсетілмеген; ашық екені белгісіз"}[language]
             ),
-            why=why, what_to_do=action, missing_information=missing,
+            why=why, what_to_do=action, missing_information=missing, evidence=evidence,
+            requirement_status={item: "confirmed" if requirement_confirmed(poi, item) else "unknown"
+                                for item in sorted(requirements)},
             airport_transfer_minutes=airport_minutes,
             airport_transfer_distance_m=airport_distance,
             latest_leave_for_airport_at=latest_leave,
@@ -651,6 +841,20 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
             participant_interest_matches=matches if group else None,
         )
         scored.append((score, rec, poi))
+    if desired == {"food"} and not request.categories:
+        dining = [item for item in scored if item[2]["category"] in {"food", "cafe"}]
+        if dining:
+            scored = dining
+    group_insufficient_coverage = False
+    if group and any(person.interests for person in participants):
+        majority = math.ceil(len(participants) / 2)
+        had_candidates = bool(scored)
+        scored = [item for item in scored if sum(item[1].participant_interest_matches or []) >= majority]
+        group_insufficient_coverage = had_candidates and not scored
+    if requirements and any(all(item[1].requirement_status.get(requirement) == "confirmed"
+                                for requirement in requirements) for item in scored):
+        scored = [item for item in scored if all(item[1].requirement_status.get(requirement) == "confirmed"
+                                                  for requirement in requirements)]
     # Greedy diversification only when the query allows several kinds of places.
     diversify = unusual or walking or len(desired) != 1
     chosen: list[Recommendation] = []
@@ -659,9 +863,14 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
     while remaining and len(chosen) < request.limit:
         eligible = []
         for score, rec, poi in remaining:
-            if any(rec.poi.name.casefold() == prev.poi.name.casefold() and
-                   distance_m(rec.poi.lat, rec.poi.lon, prev.poi.lat, prev.poi.lon) < 80
-                   for prev in chosen):
+            if any(same_place(rec, prev) for prev in chosen):
+                continue
+            chosen_names = {prev.poi.name.casefold() for prev in chosen}
+            if rec.poi.name.casefold() in chosen_names and any(
+                other_rec.poi.name.casefold() not in chosen_names
+                and not any(same_place(other_rec, prev) for prev in chosen)
+                for _, other_rec, _ in remaining
+            ):
                 continue
             if generic_name(poi) and sum(generic_name(prev) for prev in chosen_pois) >= 2:
                 continue
@@ -687,14 +896,28 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
     notices = [NOTICES[language]["walking"]]
     if any(rec.open_status == "unknown" for rec in chosen):
         notices.append(NOTICES[language]["unknown_hours"])
-    if wants_quiet:
+    if wants_quiet and any(rec.requirement_status.get("quiet") == "unknown" for rec in chosen):
         notices.append(NOTICES[language]["quiet"])
-    if wants_socket:
+    if wants_socket and any(rec.requirement_status.get("sockets") == "unknown" for rec in chosen):
         notices.append(NOTICES[language]["socket"])
     if any(term in lowered for term in INTERACTIVE_TERMS) and not any(rec.poi.category == "museum" for rec in chosen):
         notices.append(NOTICES[language]["interactive"])
     if near_flight:
         notices.append(FLIGHT_NOTICE[language].format(buffer=request.airport_arrival_buffer_minutes))
+    if requirements and chosen and not any(all(rec.requirement_status.get(item) == "confirmed"
+                                                for item in requirements) for rec in chosen):
+        notices.append({
+            "ru": "Мест с подтверждением всех условий не найдено. Показаны лучшие варианты; неизвестные условия отмечены у каждого места.",
+            "en": "No place has every requested feature confirmed. These are the best alternatives; unknown features are marked for each place.",
+            "kk": "Барлық шарттары расталған орын табылмады. Ең жақсы баламалар көрсетілді; белгісіз шарттар әр жерде көрсетілген.",
+        }[language])
     if not chosen:
-        notices.append(FLIGHT_EMPTY[language] if near_flight else NOTICES[language]["empty"])
+        if group_insufficient_coverage:
+            notices.append({
+                "ru": "Не найдено места, подходящего по интересам хотя бы большинству участников группы.",
+                "en": "No place matches the interests of at least a majority of the group.",
+                "kk": "Топ қатысушыларының кемінде көпшілігінің қызығушылығына сай орын табылмады.",
+            }[language])
+        else:
+            notices.append(FLIGHT_EMPTY[language] if near_flight else NOTICES[language]["empty"])
     return chosen, notices, start

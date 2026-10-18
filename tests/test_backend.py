@@ -12,9 +12,9 @@ from app.config import settings
 from app.db import Database
 from app.ingest import IngestError, normalize_element, parse_airport_reference, parse_overpass
 from app.main import create_app
-from app.models import RecommendRequest
+from app.models import RecommendRequest, TwoGisAttribute, TwoGisAttributeGroup
 from app.recommend import feature_kind, infer_budget, infer_flight_minutes, is_before_flight, opening_status, rank
-from app.generation import enhance, verified_options
+from app.generation import enhance
 from app.embeddings import ensure_index, semantic_scores, EmbeddingError
 from app.routing import airport_transfers, pedestrian_matrix, RoutingError
 from app.recommend import distance_m
@@ -182,28 +182,38 @@ def test_budget_inference():
     assert infer_budget("coffee near me") is None
 
 
-def test_llm_receives_only_retrieved_facts_and_validates_ids(tmp_path, monkeypatch):
+def test_llm_generates_copy_from_retrieved_facts_and_verifies_it(tmp_path, monkeypatch):
     _, db = prepared_client(tmp_path)
     request = RecommendRequest(lat=51.09, lon=71.40, query="private coffee request", language="en", limit=1)
     pois = db.all_pois()
     routes = {poi["id"]: [(100, 90)] for poi in pois}
     recommendations, _, _ = rank(pois, request, routes)
+    recommendations[0].poi.attribute_groups = [TwoGisAttributeGroup(
+        name="Services", attributes=[TwoGisAttribute(name="Takeaway", tag="food_takeaway")])]
     original_client = httpx.AsyncClient
 
+    calls = []
     def handler(http_request: httpx.Request):
         payload = json.loads(http_request.content)
         facts = payload["messages"][1]["content"]
-        assert "private coffee request" not in facts
         assert '"lat"' not in facts and '"lon"' not in facts
-        answer = {"items": [{"id": recommendations[0].poi.id,
-                             "why_id": "route_category", "action_id": "category_activity"}]}
+        calls.append(payload)
+        if len(calls) == 1:
+            assert "private coffee request" in facts
+            answer = {"items": [{"id": recommendations[0].poi.id,
+                                 "why": "Cafe One offers takeaway and is a short walk away.",
+                                 "what_to_do": "Order takeaway at Cafe One.",
+                                 "used_fact_ids": ["a0"]}]}
+        else:
+            answer = {"items": [{"id": recommendations[0].poi.id, "supported": True}]}
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(answer)}}]})
 
     monkeypatch.setattr("app.generation.httpx.AsyncClient",
                         lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs))
     config = replace(settings, llm_api_key="test", llm_base_url="https://llm.example/v1")
-    assert asyncio.run(enhance(recommendations, "en", config)) is True
-    assert recommendations[0].what_to_do == "Stop for a drink and a break."
+    assert asyncio.run(enhance(recommendations, "en", config, request.query)) is True
+    assert recommendations[0].what_to_do == "Order takeaway at Cafe One."
+    assert len(calls) == 2
 
 
 def test_embedding_index_reuses_unchanged_vectors(tmp_path, monkeypatch):
@@ -279,10 +289,12 @@ def test_llm_cannot_publish_unverified_claim(tmp_path, monkeypatch):
     pois = db.all_pois()
     recommendations, _, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.40, language="en"),
                                   {poi["id"]: [(100, 90)] for poi in pois})
+    recommendations[0].poi.attribute_groups = [TwoGisAttributeGroup(
+        name="Cuisine", attributes=[TwoGisAttribute(name="Italian cuisine", tag="italian_cuisine")])]
     before = [(rec.why, rec.what_to_do) for rec in recommendations]
-    answer = {"items": [{"id": rec.poi.id, "why_id": "route_category",
-                         "action_id": "category_activity", "why": "Free concert tonight"}
-                        for rec in recommendations]}
+    answer = {"items": [{"id": recommendations[0].poi.id,
+                         "why": "This cafe serves Italian cuisine and pizza.",
+                         "what_to_do": "Order pizza at this cafe.", "used_fact_ids": ["a0"]}]}
     original_client = httpx.AsyncClient
     monkeypatch.setattr("app.generation.httpx.AsyncClient",
                         lambda **kwargs: original_client(transport=httpx.MockTransport(
@@ -464,7 +476,7 @@ def test_flight_plan_requires_deadline_and_includes_road_and_buffer(tmp_path, mo
     assert "подходящих мест не найдено" in too_late.json()["notices"][-1]
 
 
-def test_unusual_results_are_diverse_and_uncertainty_cannot_be_dropped(tmp_path):
+def test_unusual_requires_a_sourced_distinctive_fact(tmp_path):
     db = Database(tmp_path / "diverse.sqlite3")
     db.init()
     raw = [
@@ -476,20 +488,22 @@ def test_unusual_results_are_diverse_and_uncertainty_cannot_be_dropped(tmp_path)
          "tags": {"name": "Monument Three", "historic": "monument"}},
         {"type": "node", "id": 4, "lat": 51.13, "lon": 71.44,
          "tags": {"name": "Park Four", "leisure": "park"}},
+        {"type": "way", "id": 549307755, "center": {"lat": 51.1043034, "lon": 71.4300836},
+         "tags": {"name": "Триумфальная арка Мангилик Ел", "tourism": "attraction",
+                  "opening_hours": "24/7"}},
     ]
     db.upsert_pois(parse_overpass({"elements": raw}))
     pois = db.all_pois()
     routes = {poi["id"]: [(600, 420)] for poi in pois}
-    request = RecommendRequest(lat=51.1, lon=71.41, query="Что-то необычное, пешком", limit=3)
+    request = RecommendRequest(lat=51.1, lon=71.41, query="Что-то необычное, пешком", limit=3,
+                               starts_at=datetime(2026, 10, 19, 13, tzinfo=ZoneInfo("Asia/Almaty")))
     recommendations, _, _ = rank(pois, request, routes)
-    assert len(recommendations) == 3
-    by_id = {poi["id"]: poi for poi in pois}
-    assert len({feature_kind(by_id[rec.poi.id]) for rec in recommendations}) == 3
-    assert all(rec.poi.category != "park" for rec in recommendations)
-    assert any("арт-объект" in rec.why for rec in recommendations)
-    assert all("не указано" in rec.why for rec in recommendations)
-    assert all(verified_options(rec, "ru")["why_options"]["route_category"] == rec.why
-               for rec in recommendations)
+    assert [rec.poi.id for rec in recommendations] == ["way/549307755"]
+    assert "20-летию независимости" in recommendations[0].why
+    assert recommendations[0].evidence[0].source_url.startswith("https://visitastana.kz/")
+    assert recommendations[0].evidence[0].verified_at == "2026-10-19"
+    assert "не указано" not in recommendations[0].why
+    assert all(rec.open_status == "open" for rec in recommendations)
 
 
 def test_unnamed_playgrounds_have_distinct_labels_and_missing_details(tmp_path):
@@ -497,14 +511,15 @@ def test_unnamed_playgrounds_have_distinct_labels_and_missing_details(tmp_path):
     db.init()
     raw = [{"type": "way", "id": identifier,
             "center": {"lat": 51.10 + index * 0.002, "lon": 71.41 + index * 0.002},
-            "tags": {"leisure": "playground"}}
+            "tags": {"leisure": "playground", "opening_hours": "24/7"}}
            for index, identifier in enumerate((101, 102, 103))]
     db.upsert_pois(parse_overpass({"elements": raw}))
     pois = db.all_pois()
     routes = {poi["id"]: [(300 + index * 200, 240 + index * 120)]
               for index, poi in enumerate(pois)}
     recommendations, _, _ = rank(
-        pois, RecommendRequest(lat=51.09, lon=71.4, query="Детские площадки", limit=3), routes
+        pois, RecommendRequest(lat=51.09, lon=71.4, query="Детские площадки", limit=3,
+                               starts_at=datetime(2026, 10, 19, 13, tzinfo=ZoneInfo("Asia/Almaty"))), routes
     )
     assert len(recommendations) == 2
     assert all(rec.poi.name_is_generic for rec in recommendations)
@@ -518,26 +533,29 @@ def test_walk_child_and_sightseeing_queries_exclude_unrelated_venues(tmp_path):
     db = Database(tmp_path / "relevance.sqlite3")
     db.init()
     raw = [
-        element(1, "Park", "cafe", 51.10, 71.41),
-        element(2, "Dinner", "restaurant", 51.10, 71.41),
+        element(1, "Park", "cafe", 51.10, 71.41, opening_hours="24/7"),
+        element(2, "Dinner", "restaurant", 51.10, 71.41, opening_hours="24/7"),
         {"type": "node", "id": 3, "lat": 51.10, "lon": 71.41,
-         "tags": {"name": "Green Park", "leisure": "park"}},
+         "tags": {"name": "Green Park", "leisure": "park", "opening_hours": "24/7"}},
         {"type": "way", "id": 4, "center": {"lat": 51.101, "lon": 71.412},
-         "tags": {"leisure": "playground"}},
+         "tags": {"leisure": "playground", "opening_hours": "24/7"}},
         {"type": "node", "id": 5, "lat": 51.10, "lon": 71.41,
-         "tags": {"name": "Cinema", "amenity": "cinema"}},
+         "tags": {"name": "Cinema", "amenity": "cinema", "opening_hours": "24/7"}},
         {"type": "node", "id": 6, "lat": 51.10, "lon": 71.41,
-         "tags": {"name": "Memorial", "historic": "memorial"}},
+         "tags": {"name": "Memorial", "historic": "memorial", "opening_hours": "24/7"}},
     ]
     db.upsert_pois(parse_overpass({"elements": raw}))
     pois = db.all_pois()
     routes = {poi["id"]: [(500, 360)] for poi in pois}
+    daytime = datetime(2026, 10, 19, 13, tzinfo=ZoneInfo("Asia/Almaty"))
     stroll, _, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.4,
-                                                query="Хочу прогуляться пешком"), routes)
+                                                query="Хочу прогуляться пешком", starts_at=daytime), routes)
     child, notices, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.4,
-                                                    query="С ребёнком: площадки или музей с интерактивами?"), routes)
+                                                    query="С ребёнком: площадки или музей с интерактивами?",
+                                                    starts_at=daytime), routes)
     sightseeing, _, _ = rank(pois, RecommendRequest(lat=51.09, lon=71.4,
-                                                    query="Турист хочет посмотреть достопримечательности"), routes)
+                                                    query="Турист хочет посмотреть достопримечательности",
+                                                    starts_at=daytime), routes)
     assert {rec.poi.category for rec in stroll} <= {"park", "landmark", "viewpoint"}
     assert [rec.poi.category for rec in child] == ["family"]
     assert any("Интерактивность" in notice for notice in notices)
@@ -554,7 +572,7 @@ def test_missing_quiet_and_socket_facts_are_disclosed(tmp_path):
     )
     item = recommendations[0]
     assert item.poi.category == "cafe"
-    assert any("шума" in value for value in item.missing_information)
+    assert any("Тишина" in value for value in item.missing_information)
     assert any("розеток" in value for value in item.missing_information)
     assert "Розетки отмечены" not in item.why
     assert any("розеток" in value for value in notices)
