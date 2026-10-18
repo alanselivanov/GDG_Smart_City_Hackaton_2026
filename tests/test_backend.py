@@ -21,6 +21,26 @@ from app.recommend import distance_m
 from app.geocoding import LocationError, mentioned_place
 
 
+def test_transient_2gis_embeddings_do_not_enter_osm_cache(tmp_path, monkeypatch):
+    from app.embeddings import _pack
+    from app.models import TwoGisPoi
+    from app.twogis import as_candidate
+
+    db = Database(tmp_path / "transient.sqlite3")
+    db.init()
+    poi = as_candidate(TwoGisPoi(id="123", name="Cafe", lat=51.09, lon=71.4,
+                                 distance_m=0, description="Quiet coffee"), "cafe", "en")
+    config = replace(settings, embedding_dimensions=2, embedding_model="test", llm_api_key="test")
+
+    async def fake_embed(texts, config):
+        return [_pack([1, 0] if text == "coffee" else [0.8, 0.6], 2) for text in texts]
+
+    monkeypatch.setattr("app.embeddings.embed_texts", fake_embed)
+    scores = asyncio.run(semantic_scores(db, [poi], "coffee", config))
+    assert scores["2gis/123"] == pytest.approx(0.8, abs=1e-6)
+    assert db.embeddings("test") == {}
+
+
 @pytest.fixture(autouse=True)
 def mock_external_retrieval(monkeypatch):
     async def fake_scores(db, pois, query, config):

@@ -24,11 +24,7 @@ def main() -> None:
                 print("error", response.json().get("detail", "unknown"))
                 continue
             body = response.json()
-            if body["source"] == "2gis":
-                print("source", "2gis", "fallback", body["context_used"]["fallback_used"])
-                print("places", [(item["id"], item["name"], item["distance_m"])
-                                 for item in body["recommendations"]])
-                continue
+            print("providers", body["context_used"].get("providers", ["osm"]))
             print("retrieval", body["context_used"]["retrieval_method"],
                   "routing", body["context_used"]["distance_method"],
                   "generation", body["generated_with"])

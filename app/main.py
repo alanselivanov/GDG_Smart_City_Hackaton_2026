@@ -20,7 +20,7 @@ from app.models import (Category, GroupRecommendRequest, Language, PoiOut, Prima
 from app.recommend import (ASTANA_TZ, candidate_pois, display_name, distance_m, effective_max_travel, generic_name,
                            infer_budget, infer_flight_minutes, is_before_flight, localized_description, rank)
 from app.routing import RoutingError, airport_transfers, pedestrian_matrix
-from app.twogis import TwoGisError, nearby as twogis_nearby
+from app.twogis import TwoGisError, as_candidate, nearby as twogis_nearby
 
 
 def create_app(config: Settings = settings) -> FastAPI:
@@ -81,7 +81,7 @@ def create_app(config: Settings = settings) -> FastAPI:
                     pass
 
     app = FastAPI(title="Astana Walks API", version="1.0.0", lifespan=lifespan,
-                  description="Nearby 2GIS recommendations with a local OpenStreetMap fallback.")
+                  description="Planned recommendations from OpenStreetMap and 2GIS places.")
     origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"],
@@ -118,6 +118,8 @@ def create_app(config: Settings = settings) -> FastAPI:
                     limit: int = Query(default=10, ge=1, le=30)):
         needle = q.casefold().strip()
         pois = db.all_pois()
+        if not pois and not include_twogis:
+            raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
         if not pois:
             raise HTTPException(status_code=503, detail="POI data unavailable")
         try:
@@ -131,7 +133,8 @@ def create_app(config: Settings = settings) -> FastAPI:
                           "name_is_generic": generic_name(poi),
                           "description": localized_description(poi, language)}) for poi in found[:limit]]
 
-    async def recommend(request: RecommendRequest | GroupRecommendRequest) -> RecommendResponse:
+    async def recommend(request: RecommendRequest | GroupRecommendRequest,
+                        include_twogis: bool = False) -> RecommendResponse:
         budget_was_explicit = "time_budget_minutes" in request.model_fields_set
         departure_was_explicit = "flight_departure_at" in request.model_fields_set
         inferred = infer_budget(request.query)
@@ -170,8 +173,6 @@ def create_app(config: Settings = settings) -> FastAPI:
                 request = request.model_copy(update={"time_budget_minutes": min(360, available)})
             request = request.model_copy(update={"flight_departure_at": departure})
         pois = db.all_pois()
-        if not pois:
-            raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
         group = isinstance(request, GroupRecommendRequest)
         origin = None
         if not group:
@@ -180,6 +181,41 @@ def create_app(config: Settings = settings) -> FastAPI:
             except LocationError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
             request = request.model_copy(update={"lat": origin["lat"], "lon": origin["lon"]})
+        twogis_count = 0
+        twogis_reason = None
+        if include_twogis:
+            if len(request.query) < 2:
+                twogis_reason = "missing_search_query"
+            elif not config.twogis_api_key:
+                twogis_reason = "missing_api_key"
+            else:
+                # Resolve the origin first. Every provider and Valhalla receives
+                # the same start, including when the device is elsewhere.
+                searches = [request.query]
+                lowered = request.query.casefold()
+                if any(term in lowered for term in ("площадк", "playground", "ойын алаң")) and any(
+                    term in lowered for term in ("музе", "museum", "мұраж")
+                ):
+                    searches.append("музей")
+                errors = 0
+                for search in searches:
+                    try:
+                        result = await twogis_nearby(TwoGisNearbyRequest(
+                            query=search, lat=request.lat, lon=request.lon, language=request.language,
+                        ), config)
+                    except TwoGisError:
+                        errors += 1
+                        continue
+                    intent = result.context_used["intent"]
+                    for card in result.recommendations:
+                        candidate = as_candidate(card, intent, request.language)
+                        if candidate and all(poi["id"] != candidate["id"] for poi in pois):
+                            pois.append(candidate)
+                            twogis_count += 1
+                if not twogis_count:
+                    twogis_reason = "2gis_unavailable" if errors == len(searches) else "2gis_empty"
+        if not pois:
+            raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
         try:
             if request.query:
                 async with embedding_lock:
@@ -207,6 +243,11 @@ def create_app(config: Settings = settings) -> FastAPI:
         except RoutingError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         recommendations, notices, start = rank(candidates, request, routes, scores, transfer_routes)
+        if include_twogis and recommendations:
+            selected_sources = {"2gis" if item.poi.id.startswith("2gis/") else "osm"
+                                for item in recommendations}
+            source_name = "2GIS" if selected_sources == {"2gis"} else "OSM/2GIS" if len(selected_sources) == 2 else "OSM"
+            notices = [notice.replace("OSM", source_name) for notice in notices]
         used_llm = await enhance(recommendations, request.language, config)
         context = {
             "query": request.query,
@@ -226,6 +267,14 @@ def create_app(config: Settings = settings) -> FastAPI:
             "routing_provider": config.routing_url,
             "llm_text_policy": "server_verified_options_only",
         }
+        if include_twogis:
+            context.update({
+                "providers": [provider for provider, used in (("osm", len(pois) > twogis_count),
+                                                               ("2gis", twogis_count > 0)) if used],
+                "2gis_candidate_count": twogis_count,
+                "fallback_used": twogis_count == 0,
+                "fallback_reason": twogis_reason,
+            })
         if flight_requested:
             context["flight_plan"] = {
                 "departure_at": request.flight_departure_at.astimezone(ASTANA_TZ).isoformat(),
@@ -239,52 +288,26 @@ def create_app(config: Settings = settings) -> FastAPI:
                     "type": "road_access_point_not_verified_terminal_entrance",
                 },
             }
+        sources = ({"2gis" if item.poi.id.startswith("2gis/") else "osm" for item in recommendations}
+                   or {"2gis" if poi["id"].startswith("2gis/") else "osm" for poi in candidates})
+        license_urls = {
+            "osm": "https://www.openstreetmap.org/copyright",
+            "2gis": "https://law.2gis.ru/offer-license-agreement-webapi",
+        }
+        context["source_license_urls"] = {provider: license_urls[provider] for provider in sources}
+        source = ("2GIS and © OpenStreetMap contributors (ODbL), via Overpass API" if len(sources) == 2
+                  else "2GIS" if sources == {"2gis"} else
+                  "© OpenStreetMap contributors (ODbL), via Overpass API")
         return RecommendResponse(recommendations=recommendations, language=request.language,
-                                 context_used=context, generated_with="llm_verified" if used_llm else "grounded_templates",
+                                 context_used=context, source=source,
+                                 source_license_url=("https://www.openstreetmap.org/copyright" if sources != {"2gis"}
+                                                     else license_urls["2gis"]),
+                                 generated_with="llm_verified" if used_llm else "grounded_templates",
                                  notices=notices)
 
-    @app.post("/v1/recommendations", response_model=TwoGisNearbyResponse | RecommendResponse)
+    @app.post("/v1/recommendations", response_model=RecommendResponse)
     async def individual_recommendations(request: PrimaryRecommendRequest):
-        """Try one 2GIS page first, then the local OSM planner on empty/error.
-
-        The response's source identifies its schema: 2GIS has flat POI cards;
-        OSM has the existing planned recommendations. Nearby 2GIS lookup needs
-        coordinates and a query; legacy named-origin requests use the OSM planner
-        when those inputs are unavailable. A successful 2GIS response describes
-        nearby places, not a walking/group/airport itinerary.
-        """
-        if request.lat is None:
-            fallback_reason = "missing_coordinates"
-        elif len(request.query) < 2:
-            fallback_reason = "missing_search_query"
-        else:
-            try:
-                result = await twogis_nearby(TwoGisNearbyRequest(
-                    query=request.query, lat=request.lat, lon=request.lon, language=request.language,
-                ), config)
-            except TwoGisError:
-                # Provider errors are handled here; do not expose URLs or keys.
-                fallback_reason = "2gis_unavailable"
-            else:
-                if result.recommendations:
-                    result.recommendations = result.recommendations[:request.limit]
-                    result.context_used.update({
-                        "provider": "2gis", "primary_provider": "2gis",
-                        "fallback_used": False, "fallback_reason": None,
-                    })
-                    return result
-                fallback_reason = "2gis_empty"
-
-        # Preserve explicitly supplied fields so OSM still infers the time budget
-        # from natural language. Its existing planner returns at most 3 options.
-        osm_payload = request.model_dump(exclude_unset=True)
-        osm_payload["limit"] = min(request.limit, 3)
-        result = await recommend(RecommendRequest(**osm_payload))
-        result.context_used.update({
-            "provider": "osm", "primary_provider": "2gis",
-            "fallback_used": True, "fallback_reason": fallback_reason,
-        })
-        return result
+        return await recommend(request, include_twogis=True)
 
     @app.post("/v1/osm/recommendations", response_model=RecommendResponse)
     async def osm_recommendations(request: RecommendRequest):

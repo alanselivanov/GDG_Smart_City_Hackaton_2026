@@ -447,6 +447,10 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
             action = f"«{name}» бағдарламасы мен билеттерін алдын ала тексеріңіз."
         else:
             action = ACTIVITIES[language][poi["category"]]
+    if poi["id"].startswith("2gis/"):
+        why = why.replace("OSM", "2GIS")
+        action = action.replace("OSM", "2GIS")
+        missing = [item.replace("OSM", "2GIS") for item in missing]
     return why, action, missing
 
 
@@ -598,7 +602,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
             walking_seconds=max(seconds), visit_minutes=visit,
             open_status=status,
             open_status_reason=(
-                {"ru": "По расписанию OSM", "en": "According to OSM hours", "kk": "OSM кестесіне сәйкес"}[language]
+                {"ru": "По расписанию источника", "en": "According to source hours", "kk": "Дереккөз кестесіне сәйкес"}[language]
                 if status == "open" else
                 {"ru": "Часы работы не подтверждены", "en": "Hours unverified", "kk": "Жұмыс уақыты расталмаған"}[language]
             ),

@@ -70,9 +70,7 @@ class GroupRecommendRequest(RecommendBase):
 
 
 class PrimaryRecommendRequest(RecommendRequest):
-    """Nearby 2GIS lookup, with the existing OSM planner as fallback."""
-
-    limit: int = Field(default=10, ge=1, le=10)
+    """Planned recommendations using OSM and nearby 2GIS candidates."""
 
 
 class PoiOut(BaseModel):

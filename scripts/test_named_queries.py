@@ -61,12 +61,7 @@ def main() -> None:
                         print(f"Ошибка: {body.get('detail')}")
                         continue
                     context = body["context_used"]
-                    if body["source"] == "2gis":
-                        print("Источник: 2GIS; расстояния по прямой")
-                        for poi in body["recommendations"]:
-                            print(f"  Место: {poi['name']} (ID {poi['id']}, ~{poi['distance_m']} м)")
-                            print(f"  Описание: {poi['description'] or 'не указано'}")
-                        continue
+                    print(f"Источники кандидатов: {', '.join(context.get('providers', ['osm']))}")
                     origin = context["origin"]
                     print(f"Начало: {origin['name'] or 'геолокация устройства'} ({origin['lat']}, {origin['lon']})")
                     print(f"Источник точки: {origin['source']}")
@@ -90,7 +85,7 @@ def main() -> None:
                             print(f"  До аэропорта: {item['airport_transfer_distance_m']} м, "
                                   f"{item['airport_transfer_minutes']} мин; "
                                   f"выйти до {item['latest_leave_for_airport_at']}")
-                        print(f"  OSM: {poi['source_url']}")
+                        print(f"  Источник: {poi['source_url']}")
                     if not body["recommendations"]:
                         print("Рекомендаций нет")
                     for notice in body["notices"]:

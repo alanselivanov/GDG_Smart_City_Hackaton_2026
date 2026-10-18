@@ -70,6 +70,7 @@ class TwoGisNearbyTests(unittest.TestCase):
         from app.twogis import search_plan
         self.assertEqual(search_plan("кофе рядом"), ("кафе", 1500, "cafe"))
         self.assertEqual(search_plan("с ребёнком"), ("детская площадка", 3000, "family"))
+        self.assertEqual(search_plan("музей"), ("музей", 3000, "museum"))
         self.assertEqual(search_plan("погулять"), ("парк", 3000, "park"))
         with TemporaryDirectory() as tmp:
             config = replace(settings, database_path=Path(tmp) / "empty.sqlite3",
@@ -113,6 +114,21 @@ class TwoGisNearbyTests(unittest.TestCase):
         self.assertEqual(chosen[0].rating, 4.9)
         self.assertEqual(chosen[0].review_count, 926)
         self.assertEqual(chosen[0].rating_count, 16763)
+
+    def test_schedule_is_checked_only_when_week_is_complete(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from app.twogis import schedule_to_opening_hours
+        from app.recommend import opening_status
+
+        schedule = {day: {"working_hours": [{"from": "09:00", "to": "18:00"}]}
+                    for day in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")}
+        hours = schedule_to_opening_hours(schedule)
+        monday = datetime(2026, 10, 19, 10, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        self.assertEqual(opening_status(hours, monday, 30), "open")
+        self.assertEqual(opening_status(hours, monday.replace(hour=20), 30), "closed")
+        del schedule["Sun"]
+        self.assertIsNone(schedule_to_opening_hours(schedule))
 
 
 if __name__ == "__main__":

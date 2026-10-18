@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import math
+import re
+from datetime import datetime, timezone
 
 import httpx
 
@@ -28,6 +30,8 @@ def search_plan(query: str) -> tuple[str, int, str]:
     text = query.casefold()
     if any(word in text for word in ("ребён", "ребен", "детск", "площадк", "child", "kids", "балалар", "бала")):
         return "детская площадка", 3000, "family"
+    if any(word in text for word in ("музе", "museum", "мұраж")):
+        return "музей", 3000, "museum"
     if any(word in text for word in ("прогул", "гулять", "парк", "walk", "park", "саябақ", "серуен")):
         return "парк", 3000, "park"
     if any(word in text for word in ("коф", "кафе", "coffee", "cafe")):
@@ -94,6 +98,70 @@ def _prefer_park_places(pois: list[TwoGisPoi]) -> list[TwoGisPoi]:
                 selected[duplicate].object_type, selected[duplicate].object_subtype) != ("adm_div", "place"):
             selected[duplicate] = poi
     return selected
+
+
+def schedule_to_opening_hours(schedule: dict | None) -> str | None:
+    """Convert only complete, unambiguous 2GIS weekly hours to planner syntax."""
+    if not schedule:
+        return None
+    days = (("Mon", "Mo"), ("Tue", "Tu"), ("Wed", "We"), ("Thu", "Th"),
+            ("Fri", "Fr"), ("Sat", "Sa"), ("Sun", "Su"))
+    rules = []
+    for source_day, target_day in days:
+        day = schedule.get(source_day)
+        if not isinstance(day, dict):
+            return None
+        if day.get("day_off") or day.get("is_day_off"):
+            continue
+        hours = day.get("working_hours")
+        if not isinstance(hours, list) or not hours:
+            return None
+        for interval in hours:
+            if not isinstance(interval, dict):
+                return None
+            start, end = interval.get("from"), interval.get("to")
+            if not all(isinstance(value, str) and re.fullmatch(r"(?:[01]\d|2[0-4]):[0-5]\d", value)
+                       for value in (start, end)):
+                return None
+            if start == "24:00" or start == end:
+                return None
+            rules.append(f"{target_day} {start}-{end}")
+    return "; ".join(rules) if rules else None
+
+
+def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
+    """Adapt a catalog card to the planner's source-backed POI shape."""
+    rubric_text = " ".join(poi.rubrics).casefold()
+    description = (poi.description or "").casefold()
+    combined = f"{rubric_text} {poi.name.casefold()}"
+    if any(word in combined for word in ("музе", "museum", "мұраж")):
+        category = "museum"
+    elif any(word in combined for word in ("площадк", "playground", "ойын алаң")):
+        category = "family"
+    elif any(word in combined for word in ("парк", "сквер", "park", "саябақ")):
+        category = "park"
+    elif any(word in combined for word in ("коф", "кафе", "coffee", "cafe")):
+        category = "cafe"
+    elif intent in {"family", "park", "cafe", "museum"}:
+        category = intent
+    else:
+        # An unknown catalog rubric cannot safely be assigned an activity.
+        return {}
+    tags = {"2gis:rubrics": rubric_text}
+    if poi.description:
+        tags[f"description:{language}"] = poi.description
+    if category == "museum" and any(phrase in f"{description} {poi.name.casefold()}" for phrase in (
+        "интерактивный музей", "интерактивные экспонаты", "interactive museum",
+    )):
+        tags["interactive"] = "yes"
+    return {
+        "id": f"2gis/{poi.id}", "name": poi.name, "names": {"default": poi.name},
+        "description": poi.description, "category": category, "tags": tags,
+        "lat": poi.lat, "lon": poi.lon,
+        "opening_hours": schedule_to_opening_hours(poi.schedule), "website": None, "phone": None,
+        "source_url": f"https://2gis.kz/astana/{'firm' if poi.object_type == 'branch' else 'geo'}/{poi.id}",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 async def nearby(request: TwoGisNearbyRequest, config: Settings) -> TwoGisNearbyResponse:

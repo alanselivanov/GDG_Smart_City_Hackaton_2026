@@ -23,7 +23,7 @@ def poi_text(poi: dict) -> str:
              *(CATEGORY_LABELS[language][poi["category"]] for language in ("ru", "kk", "en"))]
     parts.extend(str(tags[key]) for key in (
         "cuisine", "tourism", "amenity", "leisure", "historic", "shop", "interactive",
-        "description", "description:ru", "description:kk", "description:en"
+        "description", "description:ru", "description:kk", "description:en", "2gis:rubrics"
     ) if tags.get(key))
     return " | ".join(parts)[:1800]
 
@@ -91,16 +91,25 @@ async def ensure_index(db: Database, pois: list[dict], config: Settings = settin
 
 async def semantic_scores(db: Database, pois: list[dict], query: str,
                           config: Settings = settings) -> dict[str, float]:
-    await ensure_index(db, pois, config)
+    stored_pois = [poi for poi in pois if not poi["id"].startswith("2gis/")]
+    external_pois = [poi for poi in pois if poi["id"].startswith("2gis/")]
+    await ensure_index(db, stored_pois, config)
     query_vector = _unpack((await embed_texts([query], config))[0], config.embedding_dimensions)
     stored = db.embeddings(config.embedding_model)
     scores = {}
-    for poi in pois:
+    for poi in stored_pois:
         row = stored.get(poi["id"])
         if row is None or row[0] != content_hash(poi_text(poi)):
             raise EmbeddingError("Semantic index is incomplete")
         vector = _unpack(row[1], config.embedding_dimensions)
         scores[poi["id"]] = sum(a * b for a, b in zip(query_vector, vector))
+    # Catalog results are request-scoped and must not enter the OSM cache/FK table.
+    for start in range(0, len(external_pois), 64):
+        batch = external_pois[start:start + 64]
+        vectors = await embed_texts([poi_text(poi) for poi in batch], config)
+        for poi, packed in zip(batch, vectors):
+            vector = _unpack(packed, config.embedding_dimensions)
+            scores[poi["id"]] = sum(a * b for a, b in zip(query_vector, vector))
     return scores
 
 
