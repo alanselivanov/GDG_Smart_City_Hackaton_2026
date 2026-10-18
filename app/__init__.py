@@ -1,0 +1,1 @@
+"""Astana city walk adviser."""
