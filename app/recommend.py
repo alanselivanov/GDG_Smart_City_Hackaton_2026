@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from app.attributes import (attribute_score, average_check, fact_label, price_ceiling,
+                            relevant_facts)
 from app.models import GroupRecommendRequest, PoiOut, RecommendRequest, Recommendation
 
 
@@ -178,6 +180,9 @@ def opening_status(hours: str | None, when: datetime, visit_minutes: int) -> str
 def _preferences(query: str) -> tuple[set[str], bool, bool]:
     lowered = query.casefold()
     categories = {category for category, terms in KEYWORDS.items() if any(term in lowered for term in terms)}
+    if any(phrase in lowered for phrase in ("детское меню", "детским меню", "kids menu", "балалар мәзір")):
+        categories.discard("family")
+        categories.add("cafe")
     return categories, any(term in lowered for term in SOCKET_TERMS), any(term in lowered for term in QUIET_TERMS)
 
 
@@ -277,7 +282,8 @@ def effective_max_travel(request: RecommendRequest | GroupRecommendRequest) -> i
 def _name(poi: dict, language: str) -> str:
     name = poi["names"].get(language) or poi["names"].get("default") or poi["name"]
     if poi["name"] == "Детская площадка" and poi["names"].get("default") == "Детская площадка":
-        return f"{GENERIC_PLAYGROUND[language]} (OSM #{poi['id'].split('/')[-1]})"
+        source = "2GIS" if poi["id"].startswith("2gis/") else "OSM"
+        return f"{GENERIC_PLAYGROUND[language]} ({source} #{poi['id'].split('/')[-1]})"
     return name
 
 
@@ -328,6 +334,14 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
     interactive = any(term in lowered for term in INTERACTIVE_TERMS)
     _, wants_socket, wants_quiet = _preferences(request.query)
+    if price_ceiling(request.query) is not None and average_check(poi) is None:
+        missing_price = {
+            "ru": "Средний чек в источнике не указан; соответствие бюджету не подтверждено.",
+            "en": "No average check is listed; the budget is unverified.",
+            "kk": "Орташа чек көрсетілмеген; бюджетке сәйкестігі расталмаған.",
+        }[language]
+    else:
+        missing_price = None
     description = localized_description(poi, language)
     missing: list[str] = []
     if language == "ru":
@@ -451,6 +465,15 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
         why = why.replace("OSM", "2GIS")
         action = action.replace("OSM", "2GIS")
         missing = [item.replace("OSM", "2GIS") for item in missing]
+        labels = [label for item in relevant_facts(poi, request.query)
+                  if (label := fact_label(item, language))][:3]
+        if labels:
+            details = "; ".join(labels)
+            why += {"ru": f" Атрибуты 2GIS: {details}.",
+                    "en": f" 2GIS venue details: {details}.",
+                    "kk": f" 2GIS нысан деректері: {details}."}[language]
+    if missing_price:
+        missing.append(missing_price)
     return why, action, missing
 
 
@@ -462,12 +485,15 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
     lowered = request.query.casefold()
     walking = any(term in lowered for term in WALK_TERMS)
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
+    max_price = price_ceiling(request.query)
     candidates = []
     for poi in pois:
         category = poi["category"]
         if request.categories and category not in request.categories:
             continue
         if category in request.exclude_categories:
+            continue
+        if max_price is not None and (listed := average_check(poi)) is not None and listed > max_price:
             continue
         if not eligible_for_intent(poi, request):
             continue
@@ -480,7 +506,8 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
         if direct > max_travel * 125:
             continue
         interests = sum(not person.interests or category in person.interests for person in participants) / len(participants)
-        score = 12 * semantic_scores.get(poi["id"], 0) + 3 * (category in desired) + interests
+        score = (12 * semantic_scores.get(poi["id"], 0) + 3 * (category in desired)
+                 + interests + attribute_score(poi, request.query))
         kind = feature_kind(poi)
         if unusual:
             score += {"artwork": 3.5, "memorial": 1.5, "monument": 2.0,
@@ -505,6 +532,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
     lowered = request.query.casefold()
     walking = any(term in lowered for term in WALK_TERMS)
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
+    max_price = price_ceiling(request.query)
     near_flight = request.flight_departure_at is not None
     group = isinstance(request, GroupRecommendRequest)
     participants = request.participants if group else [request]
@@ -516,6 +544,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         if request.categories and category not in request.categories:
             continue
         if category in request.exclude_categories:
+            continue
+        if max_price is not None and (listed := average_check(poi)) is not None and listed > max_price:
             continue
         if not eligible_for_intent(poi, request):
             continue
@@ -564,6 +594,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         score += 2.5 - longest / 15
         if semantic_scores:
             score += 10 * semantic_scores.get(poi["id"], 0)
+        score += attribute_score(poi, request.query)
         score += 0.7 if status == "open" else 0
         score += 0.6 if poi["description"] else 0
         if wants_socket and poi["tags"].get("socket:access") in {"yes", "customers"}:
@@ -597,7 +628,10 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                        description=localized_description(poi, language), opening_hours=poi["opening_hours"],
                        website=poi["website"], phone=poi["phone"], source_url=poi["source_url"],
                        fetched_at=poi["fetched_at"], distance_m=round(max(distances)),
-                       name_is_generic=generic_name(poi)),
+                       name_is_generic=generic_name(poi),
+                       attribute_groups=poi.get("attribute_groups") or [],
+                       attributes_language=poi.get("attributes_language"),
+                       rating=poi.get("rating"), review_count=poi.get("review_count")),
             distance_m=round(max(distances)), walking_minutes=longest,
             walking_seconds=max(seconds), visit_minutes=visit,
             open_status=status,

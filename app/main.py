@@ -118,10 +118,8 @@ def create_app(config: Settings = settings) -> FastAPI:
                     limit: int = Query(default=10, ge=1, le=30)):
         needle = q.casefold().strip()
         pois = db.all_pois()
-        if not pois and not include_twogis:
-            raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
         if not pois:
-            raise HTTPException(status_code=503, detail="POI data unavailable")
+            raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
         try:
             async with embedding_lock:
                 scores = await semantic_scores(db, pois, needle, config)

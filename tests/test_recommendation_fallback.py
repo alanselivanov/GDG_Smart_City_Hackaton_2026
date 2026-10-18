@@ -137,6 +137,83 @@ class RecommendationPipelineTests(unittest.TestCase):
         self.assertIn("Уровень шума", missing)
         self.assertIn("розеток", missing)
 
+    def test_info_attributes_change_ranking_and_ground_explanation(self):
+        items = [
+            {"id": "plain", "name": "Plain cafe", "point": {"lat": 51.091, "lon": 71.401},
+             "rubrics": [{"name": "Кафе"}]},
+            {"id": "kids", "name": "Coffee BOOM", "point": {"lat": 51.092, "lon": 71.402},
+             "rubrics": [{"name": "Кафе"}], "reviews": {"general_rating": 4.7,
+                                                      "general_review_count": 25},
+             "attribute_groups": [
+                 {"name": "Ресторан / Кафе", "attributes": [
+                     {"name": "Детское меню", "tag": "food_kids_menu"},
+                     {"name": "Можно с ноутбуком", "tag": "food_service_cafe_working"},
+                     {"name": "Чек 7000 ₸", "tag": "food_service_avg_price"}]},
+                 {"name": "Напитки", "attributes": [
+                     {"name": "Кофе с собой", "tag": "coffee_takeaway"}]},
+             ]},
+        ]
+        response, points, _, _, _ = self.call(self.reply(items), with_osm=False, payload={
+            "query": "Ищу кафе с детским меню и розеткой", "lat": 51.09, "lon": 71.4,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(points[0][0], "кафе")
+        first = response.json()["recommendations"][0]
+        self.assertEqual(first["poi"]["id"], "2gis/kids")
+        self.assertEqual(len(first["poi"]["attribute_groups"]), 2)
+        self.assertEqual(first["poi"]["rating"], 4.7)
+        self.assertIn("Детское меню", first["why"])
+        self.assertIn("розеток", " ".join(first["missing_information"]))
+
+    def test_empty_poi_search_returns_service_unavailable(self):
+        with TemporaryDirectory() as tmp:
+            config = replace(settings, database_path=Path(tmp) / "empty.sqlite3", auto_refresh=False)
+            Database(config.database_path).init()
+            async def search():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(config)),
+                                             base_url="http://local") as client:
+                    return await client.get("/v1/pois/search", params={"q": "museum"})
+            response = asyncio.run(search())
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("POI data unavailable", response.json()["detail"])
+
+    def test_english_explanation_translates_only_known_attribute_tags(self):
+        items = [{"id": "123", "name": "Coffee BOOM", "point": {"lat": 51.091, "lon": 71.401},
+                  "rubrics": [{"name": "Кафе"}], "attribute_groups": [
+                      {"name": "Ресторан / Кафе", "attributes": [
+                          {"name": "Детское меню", "tag": "food_kids_menu"},
+                          {"name": "Можно с ноутбуком", "tag": "food_service_cafe_working"},
+                          {"name": "Непроверенная услуга", "tag": "unknown_service"}]},
+                  ]}]
+        response, _, _, _, _ = self.call(self.reply(items), with_osm=False, payload={
+            "query": "cafe with kids menu and laptop", "language": "en",
+            "lat": 51.09, "lon": 71.4,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()["recommendations"][0]
+        self.assertEqual(item["poi"]["attributes_language"], "ru")
+        self.assertIn("Children's menu", item["why"])
+        self.assertIn("Laptop-friendly", item["why"])
+        self.assertNotIn("Непроверенная услуга", item["why"])
+        self.assertEqual(item["poi"]["attribute_groups"][0]["attributes"][2]["name"],
+                         "Непроверенная услуга")
+
+    def test_known_average_check_above_explicit_budget_is_excluded(self):
+        def cafe(identity, check):
+            return {"id": identity, "name": f"Cafe {identity}",
+                    "point": {"lat": 51.091, "lon": 71.401},
+                    "rubrics": [{"name": "Кафе"}], "attribute_groups": [
+                        {"name": "Ресторан / Кафе", "attributes": [
+                            {"name": f"Чек {check} ₸", "tag": "food_service_avg_price"}]}]}
+        response, _, _, routed, _ = self.call(self.reply([cafe("high", 7000), cafe("fit", 3000)]),
+                                                with_osm=False, payload={
+            "query": "кафе до 5000 ₸", "lat": 51.09, "lon": 71.4,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([item["poi"]["id"] for item in response.json()["recommendations"]],
+                         ["2gis/fit"])
+        self.assertEqual(routed, ["2gis/fit"])
+
     def test_closed_2gis_place_is_filtered(self):
         schedule = {day: {"working_hours": [{"from": "09:00", "to": "10:00"}]}
                     for day in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")}

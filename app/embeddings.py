@@ -9,6 +9,7 @@ import struct
 import httpx
 
 from app.config import Settings, settings
+from app.attributes import facts
 from app.db import Database
 from app.recommend import CATEGORY_LABELS
 
@@ -25,6 +26,8 @@ def poi_text(poi: dict) -> str:
         "cuisine", "tourism", "amenity", "leisure", "historic", "shop", "interactive",
         "description", "description:ru", "description:kk", "description:en", "2gis:rubrics"
     ) if tags.get(key))
+    # 2GIS candidates are embedded only for this request, never saved in SQLite.
+    parts.extend(attribute["name"] for attribute in facts(poi))
     return " | ".join(parts)[:1800]
 
 

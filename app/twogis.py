@@ -8,12 +8,13 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import Settings
-from app.models import TwoGisNearbyRequest, TwoGisNearbyResponse, TwoGisPoi
+from app.models import (TwoGisAttribute, TwoGisAttributeGroup, TwoGisNearbyRequest,
+                        TwoGisNearbyResponse, TwoGisPoi)
 from app.recommend import distance_m
 
 
 PLACES_URL = "https://catalog.api.2gis.com/3.0/items"
-FIELDS = "items.point,items.description,items.reviews,items.schedule,items.rubrics"
+FIELDS = "items.point,items.description,items.reviews,items.schedule,items.rubrics,items.attribute_groups"
 # Rubric IDs observed in the Astana (region 68) 2GIS catalog.
 RUBRIC_IDS = {"cafe": 162, "park": 168, "family": 112884}
 # Places API accepts comma-separated types. Parks can be catalogued as either
@@ -28,16 +29,52 @@ class TwoGisError(Exception):
 
 def search_plan(query: str) -> tuple[str, int, str]:
     text = query.casefold()
+    # Dining with children is a restaurant request, not a playground request.
+    if any(word in text for word in ("детское меню", "детским меню", "kids menu", "балалар мәзір")):
+        return "кафе", 1500, "cafe"
+    if any(word in text for word in ("коф", "кафе", "coffee", "cafe", "ресторан", "restaurant")):
+        return "кафе", 1500, "cafe"
+    if any(word in text for word in ("музе", "museum", "мұраж")) and not any(
+        word in text for word in ("площадк", "playground", "ойын алаң")
+    ):
+        return "музей", 3000, "museum"
     if any(word in text for word in ("ребён", "ребен", "детск", "площадк", "child", "kids", "балалар", "бала")):
         return "детская площадка", 3000, "family"
     if any(word in text for word in ("музе", "museum", "мұраж")):
         return "музей", 3000, "museum"
     if any(word in text for word in ("прогул", "гулять", "парк", "walk", "park", "саябақ", "серуен")):
         return "парк", 3000, "park"
-    if any(word in text for word in ("коф", "кафе", "coffee", "cafe")):
-        return "кафе", 1500, "cafe"
     # Other requests remain searchable, without pretending to infer a category.
     return query, 1500, "other"
+
+
+def _attribute_groups(raw: object) -> list[TwoGisAttributeGroup]:
+    """Keep every named 2GIS Info fact, including menu, prices and services."""
+    if not isinstance(raw, list):
+        return []
+    groups = []
+    for group in raw[:100]:
+        if not isinstance(group, dict) or not isinstance(group.get("attributes"), list):
+            continue
+        name = group.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        attributes = []
+        for raw_attribute in group["attributes"][:500]:
+            if not isinstance(raw_attribute, dict):
+                continue
+            label = raw_attribute.get("name")
+            if not isinstance(label, str) or not label.strip():
+                continue
+            tag = raw_attribute.get("tag")
+            identity = raw_attribute.get("id")
+            attributes.append(TwoGisAttribute(
+                name=label.strip()[:200], tag=tag[:120] if isinstance(tag, str) else None,
+                id=identity if isinstance(identity, (str, int)) and not isinstance(identity, bool) else None,
+            ))
+        if attributes:
+            groups.append(TwoGisAttributeGroup(name=name.strip()[:200], attributes=attributes))
+    return groups
 
 
 def _poi(item: dict, request: TwoGisNearbyRequest, radius_m: int, intent: str) -> TwoGisPoi | None:
@@ -70,11 +107,14 @@ def _poi(item: dict, request: TwoGisNearbyRequest, radius_m: int, intent: str) -
                             if isinstance(rubric, dict) and isinstance(rubric.get("name"), str)]
         return TwoGisPoi(
             id=str(item["id"]), name=name, lat=lat, lon=lon,
+            source_url=f"https://2gis.kz/astana/{'firm' if item.get('type') == 'branch' else 'geo'}/{item['id']}",
             object_type=item.get("type") if isinstance(item.get("type"), str) else None,
             object_subtype=item.get("subtype") if isinstance(item.get("subtype"), str) else None,
             address=item.get("address_name"),
             description=description if isinstance(description, str) and description.strip() else None,
             rubrics=rubric_names,
+            attribute_groups=_attribute_groups(item.get("attribute_groups")),
+            attributes_language="ru" if request.language == "en" else request.language,
             rating=float(rating) if rating is not None else None,
             review_count=int(count) if count is not None else None,
             rating_count=int(rating_count) if rating_count is not None else None,
@@ -142,6 +182,8 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
         category = "park"
     elif any(word in combined for word in ("коф", "кафе", "coffee", "cafe")):
         category = "cafe"
+    elif any(word in combined for word in ("ресторан", "restaurant", "столов", "кухня", "dining")):
+        category = "food"
     elif intent in {"family", "park", "cafe", "museum"}:
         category = intent
     else:
@@ -157,9 +199,12 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
     return {
         "id": f"2gis/{poi.id}", "name": poi.name, "names": {"default": poi.name},
         "description": poi.description, "category": category, "tags": tags,
+        "attribute_groups": [group.model_dump() for group in poi.attribute_groups],
+        "attributes_language": poi.attributes_language,
+        "rating": poi.rating, "review_count": poi.review_count,
         "lat": poi.lat, "lon": poi.lon,
         "opening_hours": schedule_to_opening_hours(poi.schedule), "website": None, "phone": None,
-        "source_url": f"https://2gis.kz/astana/{'firm' if poi.object_type == 'branch' else 'geo'}/{poi.id}",
+        "source_url": poi.source_url or f"https://2gis.kz/astana/{'firm' if poi.object_type == 'branch' else 'geo'}/{poi.id}",
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -177,7 +222,9 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings) -> TwoGisNearby
         "sort": "distance",
         "page": 1,
         "page_size": 10,
-        "locale": {"ru": "ru_KZ", "kk": "kk_KZ", "en": "en_RU"}[request.language],
+        # The Astana catalog returns meta.code=404 with en_RU and rejects en_KZ.
+        # Search in the working Russian catalog, then label raw facts honestly.
+        "locale": {"ru": "ru_KZ", "kk": "kk_KZ", "en": "ru_KZ"}[request.language],
         "fields": FIELDS,
     }
     if intent in OBJECT_TYPES:
@@ -225,6 +272,7 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings) -> TwoGisNearby
             "rubric_id": params.get("rubric_id"),
             "region_id": params.get("region_id"),
             "distance_method": "straight_line_estimate",
+            "catalog_locale": params["locale"],
         },
         total_found=total if isinstance(total, int) else None,
     )

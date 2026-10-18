@@ -73,6 +73,17 @@ class PrimaryRecommendRequest(RecommendRequest):
     """Planned recommendations using OSM and nearby 2GIS candidates."""
 
 
+class TwoGisAttribute(BaseModel):
+    name: str
+    tag: str | None = None
+    id: str | int | None = None
+
+
+class TwoGisAttributeGroup(BaseModel):
+    name: str
+    attributes: list[TwoGisAttribute] = Field(default_factory=list)
+
+
 class PoiOut(BaseModel):
     id: str
     name: str
@@ -87,6 +98,10 @@ class PoiOut(BaseModel):
     fetched_at: str
     distance_m: int | None = None
     name_is_generic: bool = False
+    attribute_groups: list[TwoGisAttributeGroup] = Field(default_factory=list)
+    attributes_language: Language | None = None
+    rating: float | None = None
+    review_count: int | None = None
 
 
 class Recommendation(BaseModel):
@@ -139,11 +154,14 @@ class TwoGisPoi(BaseModel):
     name: str
     lat: float
     lon: float
+    source_url: str | None = None
     object_type: str | None = None
     object_subtype: str | None = None
     address: str | None = None
     description: str | None = None
     rubrics: list[str] = Field(default_factory=list)
+    attribute_groups: list[TwoGisAttributeGroup] = Field(default_factory=list)
+    attributes_language: Language | None = None
     rating: float | None = None
     review_count: int | None = None
     rating_count: int | None = None

@@ -30,6 +30,7 @@ class TwoGisNearbyTests(unittest.TestCase):
             self.assertEqual(params["locale"], "ru_KZ")
             self.assertIn("items.description", params["fields"])
             self.assertIn("items.reviews", params["fields"])
+            self.assertIn("items.attribute_groups", params["fields"])
             return httpx.Response(200, json={"meta": {"code": 200}, "result": {
                 "total": 30,
                 "items": [{"id": str(i), "name": f"Park {i}",
@@ -69,8 +70,10 @@ class TwoGisNearbyTests(unittest.TestCase):
     def test_intent_mapping_and_missing_key(self):
         from app.twogis import search_plan
         self.assertEqual(search_plan("кофе рядом"), ("кафе", 1500, "cafe"))
+        self.assertEqual(search_plan("кафе с детским меню"), ("кафе", 1500, "cafe"))
         self.assertEqual(search_plan("с ребёнком"), ("детская площадка", 3000, "family"))
         self.assertEqual(search_plan("музей"), ("музей", 3000, "museum"))
+        self.assertEqual(search_plan("музей с ребёнком"), ("музей", 3000, "museum"))
         self.assertEqual(search_plan("погулять"), ("парк", 3000, "park"))
         with TemporaryDirectory() as tmp:
             config = replace(settings, database_path=Path(tmp) / "empty.sqlite3",
@@ -92,6 +95,32 @@ class TwoGisNearbyTests(unittest.TestCase):
         item = {"id": "123", "name": None, "point": {"lat": 51.09, "lon": 71.4}}
         poi = _poi(item, request, 3000, "family")
         self.assertEqual(poi.name, "Детская площадка")
+
+    def test_all_named_info_attributes_are_parsed_without_description(self):
+        from app.models import TwoGisNearbyRequest
+        from app.twogis import _poi, as_candidate
+
+        request = TwoGisNearbyRequest(query="кафе", lat=51.101294, lon=71.41539)
+        item = {"id": "70000001066682180", "name": "Coffee BOOM", "type": "branch",
+                "point": {"lat": 51.101294, "lon": 71.41539}, "rubrics": [{"name": "Кафе"}],
+                "attribute_groups": [
+                    {"name": "Премия 2ГИС", "attributes": [
+                        {"name": "Лучшая кофейня 2022", "tag": "awards_awards_thebestcoffeeshop", "id": 1}]},
+                    {"name": "Ресторан / Кафе", "attributes": [
+                        {"name": "Чек 7000 ₸", "tag": "food_service_avg_price"},
+                        {"name": "Детское меню", "tag": "food_kids_menu"},
+                        {"name": "Можно с ноутбуком", "tag": "food_service_cafe_working"}]},
+                    {"name": "Напитки", "attributes": [{"name": "Кофе с собой", "tag": "coffee_takeaway"}]},
+                ]}
+        poi = _poi(item, request, 1500, "cafe")
+        self.assertIsNone(poi.description)
+        self.assertEqual(len(poi.attribute_groups), 3)
+        self.assertEqual(sum(len(group.attributes) for group in poi.attribute_groups), 5)
+        adapted = as_candidate(poi, "cafe", "ru")
+        self.assertEqual(adapted["attribute_groups"][1]["attributes"][1]["name"], "Детское меню")
+        self.assertEqual(adapted["attributes_language"], "ru")
+        self.assertEqual(adapted["source_url"], "https://2gis.kz/astana/firm/70000001066682180")
+        self.assertEqual(poi.source_url, adapted["source_url"])
 
     def test_same_name_park_prefers_area_card_with_rating(self):
         from app.models import TwoGisNearbyRequest
@@ -129,6 +158,14 @@ class TwoGisNearbyTests(unittest.TestCase):
         self.assertEqual(opening_status(hours, monday.replace(hour=20), 30), "closed")
         del schedule["Sun"]
         self.assertIsNone(schedule_to_opening_hours(schedule))
+
+    def test_price_detection_requires_explicit_tenge_budget(self):
+        from app.attributes import average_check, price_ceiling
+        self.assertEqual(price_ceiling("кафе до 5 000 ₸"), 5000)
+        self.assertEqual(price_ceiling("cafe under 5000 KZT"), 5000)
+        self.assertIsNone(price_ceiling("до 2 часов"))
+        self.assertEqual(average_check({"attribute_groups": [{"attributes": [
+            {"name": "Чек 7000 ₸", "tag": "food_service_avg_price"}]}]}), 7000)
 
 
 if __name__ == "__main__":
