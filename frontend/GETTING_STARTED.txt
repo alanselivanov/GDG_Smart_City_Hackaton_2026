@@ -1,0 +1,61 @@
+Qala рядом — frontend MVP
+
+Requirements: Node.js 20.19+ (or 22.12+). The backend is in the repository root.
+
+Run frontend:
+  cd frontend
+  npm install
+  npm run dev
+
+Run backend in a second terminal from the repository root:
+  .venv/bin/python -m uvicorn app.main:app --reload
+
+Frontend dev URL: http://localhost:5173
+Backend docs: http://127.0.0.1:8000/docs
+
+Vite proxies /api to the local backend. Do not put LLM_API_KEY or 2GIS_API_KEY
+in frontend env variables. The backend needs a POI import and LLM_API_KEY for
+non-empty text queries. See the repository root .env.example for backend config.
+
+The MVP calls GET /health and POST /v1/recommendations. GET /v1/pois/search
+returns 503 with a clear message when the POI cache is empty. The frontend
+does not currently use that endpoint.
+
+The main form sends one natural-language query. An explicitly mentioned place
+takes priority over optional device coordinates in the backend. The frontend
+omits time_budget_minutes so the backend can infer the duration from the query;
+without a duration, the backend uses 90 minutes. The frontend only requests
+geolocation after a click and never persists coordinates locally. Without
+coordinates or a place in the query, the backend returns a 422; the UI
+explains what is needed.
+For the demo, the frontend recognizes the Astana shorthand «возле Меги» as
+Mega Silk Way. Other ambiguous or unknown names still depend on the backend
+place resolver.
+
+Optional settings are max_travel_minutes, starts_at, and language. A scheduled
+start is entered in the browser's local time and sent as a timezone-aware UTC
+ISO timestamp. The frontend also recognizes explicit Russian "сегодня/завтра
+в HH:MM" in the query and sends that time as starts_at. The result displays
+the effective time budget, start time and origin. A named start in the query
+takes priority over device geolocation; the geolocation button remains visible
+so the device position can still be shown separately on the map.
+
+The built-in map uses React Leaflet with OpenStreetMap tiles. It displays the
+resolved origin and numbered POI markers from the existing recommendation
+response. After browser geolocation consent, it can also display the device
+position separately from a named starting place. Map tiles are loaded by the
+browser from OpenStreetMap. The backend currently returns walking time and
+distance but no route geometry, so the map does not draw a pedestrian route.
+The "Во весь экран" button expands the map over the viewport; Escape closes it.
+
+Cards show the travel time, source and hours status. A reason preview appears
+only when it adds information beyond the category and distance already shown.
+"Подробнее" reveals the full backend wording, action
+suggestion, time estimate, uncertainty and source links.
+The current recommendation API does not provide verified photo URLs. Cards
+therefore show no place images. No manually chosen or generated place media is
+included. 2GIS Places API can filter by photo availability but does not return
+the photo files:
+https://docs.2gis.com/api/search/places/examples/filtering
+
+See DEMO_SCENARIOS.txt for manual end-to-end checks.
