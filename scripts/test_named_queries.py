@@ -61,6 +61,12 @@ def main() -> None:
                         print(f"Ошибка: {body.get('detail')}")
                         continue
                     context = body["context_used"]
+                    if body["source"] == "2gis":
+                        print("Источник: 2GIS; расстояния по прямой")
+                        for poi in body["recommendations"]:
+                            print(f"  Место: {poi['name']} (ID {poi['id']}, ~{poi['distance_m']} м)")
+                            print(f"  Описание: {poi['description'] or 'не указано'}")
+                        continue
                     origin = context["origin"]
                     print(f"Начало: {origin['name'] or 'геолокация устройства'} ({origin['lat']}, {origin['lon']})")
                     print(f"Источник точки: {origin['source']}")

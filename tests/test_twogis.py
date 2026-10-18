@@ -1,0 +1,119 @@
+import asyncio
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import httpx
+from app.config import settings
+from app.main import create_app
+
+
+class TwoGisNearbyTests(unittest.TestCase):
+    def test_one_page_ten_places_without_osm_data_or_extra_requests(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            params = request.url.params
+            self.assertEqual(request.url.path, "/3.0/items")
+            self.assertEqual(params["q"], "парк")
+            self.assertEqual(params["point"], "71.4073303,51.0890897")
+            self.assertEqual(params["radius"], "3000")
+            self.assertEqual(params["page"], "1")
+            self.assertEqual(params["page_size"], "10")
+            self.assertEqual(params["sort"], "distance")
+            self.assertEqual(params["type"], "adm_div.place,attraction")
+            self.assertEqual(params["rubric_id"], "168")
+            self.assertEqual(params["region_id"], "68")
+            self.assertEqual(params["locale"], "ru_KZ")
+            self.assertIn("items.description", params["fields"])
+            self.assertIn("items.reviews", params["fields"])
+            return httpx.Response(200, json={"meta": {"code": 200}, "result": {
+                "total": 30,
+                "items": [{"id": str(i), "name": f"Park {i}",
+                           "point": {"lat": 51.0891, "lon": 71.4074},
+                           "description": "Зелёная зона" if i == 0 else None,
+                           "reviews": {"general_rating": 4.5, "general_review_count": 12}}
+                          for i in range(10)],
+            }})
+
+        real_client = httpx.AsyncClient
+
+        def fake_client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with TemporaryDirectory() as tmp:
+            config = replace(settings, database_path=Path(tmp) / "empty.sqlite3",
+                             auto_refresh=False, twogis_api_key="test-key")
+            app = create_app(config)
+            async def call_api():
+                transport = httpx.ASGITransport(app=app)
+                async with real_client(transport=transport, base_url="http://local") as client:
+                    return await client.post("/v1/2gis/recommendations", json={
+                        "query": "Я возле Mega Silk Way, хочу прогуляться",
+                        "lat": 51.0890897, "lon": 71.4073303,
+                    })
+            with patch("app.twogis.httpx.AsyncClient", fake_client):
+                response = asyncio.run(call_api())
+            self.assertEqual(response.status_code, 200, response.text)
+            data = response.json()
+            self.assertEqual(data["source"], "2gis")
+            self.assertEqual(len(data["recommendations"]), 10)
+            self.assertEqual(data["total_found"], 30)
+            self.assertEqual(data["recommendations"][0]["description"], "Зелёная зона")
+            self.assertEqual(data["recommendations"][0]["rating"], 4.5)
+            self.assertEqual(len(requests), 1)
+
+    def test_intent_mapping_and_missing_key(self):
+        from app.twogis import search_plan
+        self.assertEqual(search_plan("кофе рядом"), ("кафе", 1500, "cafe"))
+        self.assertEqual(search_plan("с ребёнком"), ("детская площадка", 3000, "family"))
+        self.assertEqual(search_plan("погулять"), ("парк", 3000, "park"))
+        with TemporaryDirectory() as tmp:
+            config = replace(settings, database_path=Path(tmp) / "empty.sqlite3",
+                             auto_refresh=False, twogis_api_key="")
+            async def call_api():
+                transport = httpx.ASGITransport(app=create_app(config))
+                async with httpx.AsyncClient(transport=transport, base_url="http://local") as client:
+                    return await client.post("/v1/2gis/recommendations", json={
+                        "query": "кофе рядом", "lat": 51.09, "lon": 71.4,
+                    })
+            response = asyncio.run(call_api())
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("2GIS_API_KEY", response.json()["detail"])
+
+    def test_unnamed_playground_label_is_not_none(self):
+        from app.models import TwoGisNearbyRequest
+        from app.twogis import _poi
+        request = TwoGisNearbyRequest(query="с ребёнком", lat=51.09, lon=71.4)
+        item = {"id": "123", "name": None, "point": {"lat": 51.09, "lon": 71.4}}
+        poi = _poi(item, request, 3000, "family")
+        self.assertEqual(poi.name, "Детская площадка")
+
+    def test_same_name_park_prefers_area_card_with_rating(self):
+        from app.models import TwoGisNearbyRequest
+        from app.twogis import _poi, _prefer_park_places
+
+        request = TwoGisNearbyRequest(query="погулять", lat=51.0890897, lon=71.4073303)
+        attraction = _poi({"id": "70030076302829268", "name": "ЭКСПО-парк",
+                           "type": "attraction", "point": {"lat": 51.095657, "lon": 71.418511},
+                           "reviews": {"items": [{"tag": "2gis_reviews"}]}}, request, 3000, "park")
+        place = _poi({"id": "70030076138264995", "name": "ЭКСПО-парк",
+                      "type": "adm_div", "subtype": "place",
+                      "point": {"lat": 51.093772, "lon": 71.417537},
+                      "reviews": {"general_rating": 4.9, "general_review_count": 926,
+                                  "general_review_count_with_stars": 16763}}, request, 3000, "park")
+        self.assertIsNotNone(attraction)
+        self.assertIsNotNone(place)
+        chosen = _prefer_park_places([attraction, place])
+        self.assertEqual(len(chosen), 1)
+        self.assertEqual(chosen[0].id, "70030076138264995")
+        self.assertEqual(chosen[0].rating, 4.9)
+        self.assertEqual(chosen[0].review_count, 926)
+        self.assertEqual(chosen[0].rating_count, 16763)
+
+
+if __name__ == "__main__":
+    unittest.main()

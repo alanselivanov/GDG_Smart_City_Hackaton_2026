@@ -42,7 +42,7 @@ def element(identifier: int, name: str, amenity: str, lat: float, lon: float, **
 
 def prepared_client(tmp_path):
     config = replace(settings, database_path=tmp_path / "pois.sqlite3", auto_refresh=False,
-                     admin_token="a" * 32, llm_api_key="")
+                     admin_token="a" * 32, llm_api_key="", twogis_api_key="")
     db = Database(config.database_path)
     db.init()
     data = [

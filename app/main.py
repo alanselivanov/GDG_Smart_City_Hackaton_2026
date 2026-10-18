@@ -15,10 +15,12 @@ from app.embeddings import EmbeddingError, semantic_scores
 from app.generation import enhance
 from app.geocoding import LocationError, resolve_origin
 from app.ingest import IngestError, refresh, refresh_airport_reference
-from app.models import Category, GroupRecommendRequest, Language, PoiOut, RecommendRequest, RecommendResponse
+from app.models import (Category, GroupRecommendRequest, Language, PoiOut, PrimaryRecommendRequest, RecommendRequest,
+                        RecommendResponse, TwoGisNearbyRequest, TwoGisNearbyResponse)
 from app.recommend import (ASTANA_TZ, candidate_pois, display_name, distance_m, effective_max_travel, generic_name,
                            infer_budget, infer_flight_minutes, is_before_flight, localized_description, rank)
 from app.routing import RoutingError, airport_transfers, pedestrian_matrix
+from app.twogis import TwoGisError, nearby as twogis_nearby
 
 
 def create_app(config: Settings = settings) -> FastAPI:
@@ -79,7 +81,7 @@ def create_app(config: Settings = settings) -> FastAPI:
                     pass
 
     app = FastAPI(title="Astana Walks API", version="1.0.0", lifespan=lifespan,
-                  description="Grounded city recommendations from real OpenStreetMap POI.")
+                  description="Nearby 2GIS recommendations with a local OpenStreetMap fallback.")
     origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "").split(",") if x.strip()]
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"],
@@ -241,13 +243,64 @@ def create_app(config: Settings = settings) -> FastAPI:
                                  context_used=context, generated_with="llm_verified" if used_llm else "grounded_templates",
                                  notices=notices)
 
-    @app.post("/v1/recommendations", response_model=RecommendResponse)
-    async def individual_recommendations(request: RecommendRequest):
+    @app.post("/v1/recommendations", response_model=TwoGisNearbyResponse | RecommendResponse)
+    async def individual_recommendations(request: PrimaryRecommendRequest):
+        """Try one 2GIS page first, then the local OSM planner on empty/error.
+
+        The response's source identifies its schema: 2GIS has flat POI cards;
+        OSM has the existing planned recommendations. Nearby 2GIS lookup needs
+        coordinates and a query; legacy named-origin requests use the OSM planner
+        when those inputs are unavailable. A successful 2GIS response describes
+        nearby places, not a walking/group/airport itinerary.
+        """
+        if request.lat is None:
+            fallback_reason = "missing_coordinates"
+        elif len(request.query) < 2:
+            fallback_reason = "missing_search_query"
+        else:
+            try:
+                result = await twogis_nearby(TwoGisNearbyRequest(
+                    query=request.query, lat=request.lat, lon=request.lon, language=request.language,
+                ), config)
+            except TwoGisError:
+                # Provider errors are handled here; do not expose URLs or keys.
+                fallback_reason = "2gis_unavailable"
+            else:
+                if result.recommendations:
+                    result.recommendations = result.recommendations[:request.limit]
+                    result.context_used.update({
+                        "provider": "2gis", "primary_provider": "2gis",
+                        "fallback_used": False, "fallback_reason": None,
+                    })
+                    return result
+                fallback_reason = "2gis_empty"
+
+        # Preserve explicitly supplied fields so OSM still infers the time budget
+        # from natural language. Its existing planner returns at most 3 options.
+        osm_payload = request.model_dump(exclude_unset=True)
+        osm_payload["limit"] = min(request.limit, 3)
+        result = await recommend(RecommendRequest(**osm_payload))
+        result.context_used.update({
+            "provider": "osm", "primary_provider": "2gis",
+            "fallback_used": True, "fallback_reason": fallback_reason,
+        })
+        return result
+
+    @app.post("/v1/osm/recommendations", response_model=RecommendResponse)
+    async def osm_recommendations(request: RecommendRequest):
+        """Explicit OSM-only planner for source comparisons and route planning."""
         return await recommend(request)
 
     @app.post("/v1/group/recommendations", response_model=RecommendResponse)
     async def group_recommendations(request: GroupRecommendRequest):
         return await recommend(request)
+
+    @app.post("/v1/2gis/recommendations", response_model=TwoGisNearbyResponse)
+    async def twogis_recommendations(request: TwoGisNearbyRequest):
+        try:
+            return await twogis_nearby(request, config)
+        except TwoGisError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/v1/admin/refresh")
     async def admin_refresh(x_admin_token: str | None = Header(default=None)):

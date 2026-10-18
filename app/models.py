@@ -69,6 +69,12 @@ class GroupRecommendRequest(RecommendBase):
     participants: list[Participant] = Field(min_length=3, max_length=5)
 
 
+class PrimaryRecommendRequest(RecommendRequest):
+    """Nearby 2GIS lookup, with the existing OSM planner as fallback."""
+
+    limit: int = Field(default=10, ge=1, le=10)
+
+
 class PoiOut(BaseModel):
     id: str
     name: str
@@ -115,3 +121,40 @@ class RecommendResponse(BaseModel):
     source_license_url: str = "https://www.openstreetmap.org/copyright"
     generated_with: Literal["grounded_templates", "llm_verified"]
     notices: list[str]
+
+
+class TwoGisNearbyRequest(Location):
+    query: str = Field(min_length=2, max_length=500)
+    language: Language = "ru"
+
+    @field_validator("query")
+    @classmethod
+    def clean_query(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 2:
+            raise ValueError("query must contain at least two characters")
+        return value
+
+
+class TwoGisPoi(BaseModel):
+    id: str
+    name: str
+    lat: float
+    lon: float
+    object_type: str | None = None
+    object_subtype: str | None = None
+    address: str | None = None
+    description: str | None = None
+    rubrics: list[str] = Field(default_factory=list)
+    rating: float | None = None
+    review_count: int | None = None
+    rating_count: int | None = None
+    schedule: dict | None = None
+    distance_m: int
+
+
+class TwoGisNearbyResponse(BaseModel):
+    recommendations: list[TwoGisPoi]
+    source: Literal["2gis"] = "2gis"
+    context_used: dict
+    total_found: int | None = None

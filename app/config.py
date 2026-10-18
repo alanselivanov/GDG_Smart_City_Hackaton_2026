@@ -32,6 +32,8 @@ class Settings:
     geocoder_url: str = os.getenv("GEOCODER_URL", "https://nominatim.openstreetmap.org")
     geocoder_user_agent: str = os.getenv("GEOCODER_USER_AGENT", "AstanaWalksHackathon/1.0 (Astana city recommendations)")
     geocoder_timeout_seconds: float = float(os.getenv("GEOCODER_TIMEOUT_SECONDS", "15"))
+    twogis_api_key: str = os.getenv("2GIS_API_KEY", "")
+    twogis_timeout_seconds: float = float(os.getenv("2GIS_TIMEOUT_SECONDS", "15"))
     # OSM node identity is stable; its coordinates are fetched with every POI refresh.
     airport_route_osm_node_id: int = int(os.getenv("AIRPORT_ROUTE_OSM_NODE_ID", "14089441237"))
     osm_api_url: str = os.getenv("OSM_API_URL", "https://api.openstreetmap.org")
