@@ -134,23 +134,33 @@ def parse_airport_reference(xml: str, node_id: int) -> dict:
 
 async def fetch_pois(config: Settings = settings) -> list[dict]:
     headers = {"User-Agent": config.overpass_user_agent, "Accept": "application/json"}
+    endpoints = tuple(dict.fromkeys((config.overpass_url, *config.overpass_fallback_urls)))
+    failures: list[str] = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(105.0, connect=15.0), headers=headers) as client:
-        for attempt in range(3):
-            try:
-                response = await client.post(config.overpass_url, data={"data": QUERY})
-                if response.status_code in {406, 429} and attempt < 2:
-                    await asyncio.sleep(30)
-                    continue
-                if response.status_code in {502, 503, 504} and attempt < 2:
-                    await asyncio.sleep(2 ** attempt * 3)
-                    continue
-                response.raise_for_status()
-                return parse_overpass(response.json())
-            except (httpx.HTTPError, ValueError) as exc:
-                if attempt == 2:
-                    raise IngestError(f"Overpass request failed: {type(exc).__name__}") from exc
-                await asyncio.sleep(2 ** attempt * 3)
-    raise IngestError("Overpass request failed")
+        for endpoint in endpoints:
+            host = httpx.URL(endpoint).host or "unknown"
+            for attempt in range(3):
+                try:
+                    response = await client.post(endpoint, data={"data": QUERY})
+                    response.raise_for_status()
+                    return parse_overpass(response.json())
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code
+                    if status in {400, 401, 403, 404, 406, 413}:
+                        failures.append(f"{host}: HTTP {status}")
+                        if status == 406:
+                            await asyncio.sleep(30)
+                        break
+                    if attempt == 2:
+                        failures.append(f"{host}: HTTP {status}")
+                    else:
+                        await asyncio.sleep(3 * (2 ** attempt) if status != 429 else 30 * (2 ** attempt))
+                except (httpx.HTTPError, ValueError, IngestError) as exc:
+                    if attempt == 2:
+                        failures.append(f"{host}: {type(exc).__name__}")
+                    else:
+                        await asyncio.sleep(3 * (2 ** attempt))
+    raise IngestError("Overpass request failed (" + "; ".join(failures) + "); cached POIs kept")
 
 
 async def refresh_airport_reference(db: Database, config: Settings = settings) -> dict:

@@ -7,10 +7,28 @@ import math
 import httpx
 
 from app.config import Settings, settings
+from app.recommend import distance_m
 
 
 class RoutingError(Exception):
     pass
+
+
+def estimated_pedestrian_matrix(origins: list[tuple[float, float]], targets: list[dict]
+                                ) -> dict[str, list[tuple[int, int]]]:
+    """Conservative, explicitly labelled backup when the road router is down.
+
+    This must never be used for the airport deadline calculation.
+    """
+    result = {}
+    for poi in targets:
+        values = []
+        for lat, lon in origins:
+            metres = max(1, math.ceil(distance_m(lat, lon, poi["lat"], poi["lon"]) * 1.45))
+            seconds = math.ceil(metres / 1.15)
+            values.append((metres, seconds))
+        result[poi["id"]] = values
+    return result
 
 
 async def pedestrian_matrix(origins: list[tuple[float, float]], targets: list[dict],

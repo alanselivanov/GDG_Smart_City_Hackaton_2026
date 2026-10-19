@@ -39,6 +39,19 @@ _TIME_TAIL = re.compile(
     r"in\s+the\s+(?:morning|afternoon|evening)\b|"
     r"сегодня\b|завтра\b|утром\b|днём\b|днем\b|вечером\b|ночью\b)"
 )
+_REQUEST_TAIL = re.compile(
+    r"(?iu)\s+(?:за\s+\d+\s*(?:час|минут)|на\s+\d+\s*(?:час|минут)|"
+    r"в\s+течени[еи]\s+\d+\s*(?:час|минут)|"
+    r"for\s+(?:(?:one|two|three|\d+)\s+)?(?:hours?|minutes?)\b|"
+    r"на\s+час\b|за\s+час\b|"
+    r"пешком\b|с\s+реб[её]нком\b|with\s+(?:a\s+)?child\b|"
+    r"где\b|куда\b|что\s+делать\b|to\s+(?:walk|eat|visit|spend)\b)"
+)
+_GENERIC_PLACE = re.compile(
+    r"(?iu)^(?:рядом|поближе|недалеко|здесь|тут|там|nearby|around|"
+    r"за\s+\w+|на\s+\w+|for\s+\w+|"
+    r"погулять|поесть|отдохнуть)(?:\b|$)"
+)
 _THERE = re.compile(r"(?iu)\b(?:я\s+)?(?:сейчас\s+)?(?:там|there)\b")
 _TIME_AFTER_AROUND = re.compile(
     r"(?iu)^(?:\d|час(?:а|ов)?\b|минут|полчас|полутора?\b|пары?\s+час)"
@@ -65,8 +78,13 @@ def mentioned_place(query: str) -> str | None:
     for pattern in (_MENTION, _OTHER_MENTION):
         match = pattern.search(query)
         if match:
-            value = _TIME_TAIL.split(_TAIL.split(match.group("place"), 1)[0], 1)[0].strip(" \"'«»()")
+            value = match.group("place")
+            for tail in (_TAIL, _TIME_TAIL, _REQUEST_TAIL):
+                value = tail.split(value, 1)[0]
+            value = value.strip(" \"'«»()")
             if match.group(0).casefold().lstrip().startswith("около ") and _TIME_AFTER_AROUND.match(value):
+                continue
+            if not value or _GENERIC_PLACE.match(value):
                 continue
             return value[:120] or None
     return None

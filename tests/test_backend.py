@@ -273,7 +273,7 @@ def test_group_routing_is_batched_below_public_matrix_limit(monkeypatch):
     assert len(result) == 40 and all(len(value) == 3 for value in result.values())
 
 
-def test_routing_outage_returns_503_without_straight_line_fallback(tmp_path, monkeypatch):
+def test_routing_outage_uses_explicit_estimate_for_non_flight_trip(tmp_path, monkeypatch):
     client, _ = prepared_client(tmp_path)
     async def unavailable(origins, targets, config):
         raise RoutingError("routing unavailable")
@@ -281,7 +281,34 @@ def test_routing_outage_returns_503_without_straight_line_fallback(tmp_path, mon
     with client:
         response = client.post("/v1/recommendations", json={"lat": 51.09, "lon": 71.4,
                                                              "query": "coffee"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["context_used"]["routing_fallback_used"] is True
+    assert body["context_used"]["distance_method"] == "geodesic_estimate_with_detour_factor"
+    assert any("приблизительные" in note for note in body["notices"])
+
+
+def test_flight_plan_does_not_use_estimated_route_on_router_outage(tmp_path, monkeypatch):
+    client, _ = prepared_client(tmp_path)
+    async def unavailable(origins, targets, config):
+        raise RoutingError("routing unavailable")
+    async def fake_airport(*args):
+        return {}
+    monkeypatch.setattr("app.main.pedestrian_matrix", unavailable)
+    monkeypatch.setattr("app.main.airport_transfers", fake_airport)
+    departure = (datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(hours=4)).isoformat()
+    with client:
+        response = client.post("/v1/recommendations", json={"lat": 51.09, "lon": 71.4,
+            "query": "Куда сходить перед вылетом?", "flight_departure_at": departure})
     assert response.status_code == 503
+
+
+def test_empty_free_text_without_explicit_preferences_is_rejected(tmp_path):
+    client, _ = prepared_client(tmp_path)
+    with client:
+        response = client.post("/v1/recommendations", json={"lat": 51.09, "lon": 71.4,
+            "query": "   "})
+    assert response.status_code == 422
 
 
 def test_llm_cannot_publish_unverified_claim(tmp_path, monkeypatch):

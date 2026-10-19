@@ -120,6 +120,58 @@ ATTRACTIONS = {
              "action_kk": "Монументтің тарихи бедерлерін тамашалаңыз."},
         ],
     },
+    "way/240860325": {
+        "name_contains": "Хазрет Султан",
+        "facts": [
+            {"key": "hazret_domes", "kind": "distinctive", "source_url":
+             "https://visitastana.kz/en/about-city/what-to-see/mechet-khazret-sultan/",
+             "ru": "У мечети Хазрет Султан центральный купол высотой 51 метр и четыре минарета высотой 77 метров.",
+             "en": "Hazrat Sultan Mosque has a 51-metre central dome and four 77-metre minarets.",
+             "kk": "Әзірет Сұлтан мешітінің орталық күмбезі 51 метр, ал төрт мұнарасы 77 метр биіктікте.",
+             "action_ru": "Снаружи сравните главный купол и четыре минарета; правила посещения уточните отдельно.",
+             "action_en": "Compare the main dome and four minarets from outside; check visiting rules separately.",
+             "action_kk": "Сыртынан бас күмбез бен төрт мұнараны салыстырыңыз; кіру тәртібін бөлек анықтаңыз."},
+        ],
+    },
+    "way/1296051287": {
+        "name_contains": "Корейский сад",
+        "facts": [
+            {"key": "korean_garden_pavilion", "kind": "distinctive", "source_url":
+             "https://visitastana.kz/en/about-city/what-to-see/korean-garden-of-friendship-/",
+             "ru": "В Корейском саду дружбы, внутри парка Жетысу, расположена беседка в корейском стиле с изогнутой крышей.",
+             "en": "The Korean Garden of Friendship, within Zhetysu Park, has a Korean-style pavilion with curved eaves.",
+             "kk": "Жетісу саябағындағы Корей достығы бағында иілген шатыры бар корей үлгісіндегі күрке орналасқан.",
+             "action_ru": "Пройдите по саду и найдите беседку с изогнутой крышей.",
+             "action_en": "Walk through the garden and find the pavilion with curved eaves.",
+             "action_kk": "Бақпен жүріп, иілген шатырлы күркені табыңыз."},
+        ],
+    },
+    "relation/15957444": {
+        "name_contains": "Парк Астана",
+        "facts": [
+            {"key": "astana_park_river", "kind": "distinctive", "source_url":
+             "https://visitastana.kz/en/about-city/what-to-see/stolichnyy-park/",
+             "ru": "Парк Астана расположен у реки Есиль; источник отмечает прогулочные аллеи, дорожки и виды на реку.",
+             "en": "Astana Park lies by the Yesil River; the city guide describes walking paths and river views.",
+             "kk": "Астана саябағы Есіл өзенінің жағасында; қалалық анықтамалық серуен жолдары мен өзен көріністерін сипаттайды.",
+             "action_ru": "Выберите аллею вдоль Есиля и посмотрите на реку.",
+             "action_en": "Follow a path by the Yesil and look out over the river.",
+             "action_kk": "Есіл бойындағы жолмен жүріп, өзен көрінісін тамашалаңыз."},
+        ],
+    },
+    "relation/18901938": {
+        "name_contains": "Нурсултан",
+        "facts": [
+            {"key": "nursultan_mosque_architecture", "kind": "distinctive", "source_url":
+             "https://visitastana.kz/en/about-city/what-to-see/",
+             "ru": "У мечети Нурсултан мраморный фасад, главный купол и минареты высотой 130 метров.",
+             "en": "Nursultan Mosque has a marble facade, a main dome and 130-metre minarets.",
+             "kk": "Нұрсұлтан мешітінің мәрмәр қасбеті, бас күмбезі және биіктігі 130 метр мұнаралары бар.",
+             "action_ru": "Рассмотрите снаружи мраморный фасад и высокие минареты.",
+             "action_en": "Look at the marble facade and tall minarets from outside.",
+             "action_kk": "Сыртынан мәрмәр қасбет пен биік мұнараларды қараңыз."},
+        ],
+    },
 }
 
 
@@ -138,6 +190,28 @@ NUR_ALEM_FACT = {
 }
 NUR_ALEM_2GIS_BUILDING_ID = "9570784863354303"
 
+EXPO_TERRITORY_FACT = {
+    "key": "expo_walkways", "kind": "distinctive", "source_url":
+    "https://visitastana.kz/en/about-city/what-to-see/territoriya-expo/",
+    "ru": "На территории EXPO-2017 есть широкие пешеходные площади, фонтаны и световые инсталляции вокруг павильона Нур-Алем.",
+    "en": "The EXPO-2017 grounds have broad pedestrian areas, fountains and light installations around Nur Alem.",
+    "kk": "EXPO-2017 аумағында Нұр Әлем павильонының айналасында кең серуен алаңдары, субұрқақтар мен жарық қондырғылары бар.",
+    "action_ru": "Пройдите по пешеходной площади вокруг Нур-Алема; работу фонтанов и подсветки проверьте на месте.",
+    "action_en": "Walk the pedestrian area around Nur Alem; check whether the fountains and lights are operating.",
+    "action_kk": "Нұр Әлем маңындағы жаяу алаңды аралаңыз; субұрқақтар мен жарықтың жұмысын сол жерде тексеріңіз.",
+}
+
+KHAN_SHATYR_FACT = {
+    "key": "khan_shatyr_tent", "kind": "distinctive", "source_url":
+    "https://visitastana.kz/en/about-city/what-to-see/khan-shatyr-sec/",
+    "ru": "Хан Шатыр построен в форме гигантского шатра по проекту архитектора Нормана Фостера.",
+    "en": "Khan Shatyr is a giant tent-shaped complex designed by architect Norman Foster.",
+    "kk": "Хан Шатыр — сәулетші Норман Фостер жобалаған алып шатыр пішінді кешен.",
+    "action_ru": "Рассмотрите шатровую конструкцию снаружи; часы доступа внутрь проверьте отдельно.",
+    "action_en": "Look at the tent structure from outside; check indoor access hours separately.",
+    "action_kk": "Сыртынан шатыр құрылымын қараңыз; ішке кіру уақытын бөлек тексеріңіз.",
+}
+
 
 def name_matched_facts(name: str, lat: float, lon: float, source_id: str | None = None) -> list[dict]:
     simplified = name.casefold().replace("-", " ").replace("ә", "а").replace("ұ", "у")
@@ -146,4 +220,12 @@ def name_matched_facts(name: str, lat: float, lon: float, source_id: str | None 
         or (source_id == f"2gis/{NUR_ALEM_2GIS_BUILDING_ID}" and "55/1" in simplified)
     ):
         return [NUR_ALEM_FACT]
+    if 51.075 <= lat <= 51.10 and 71.36 <= lon <= 71.43 and any(
+        alias in simplified for alias in ("экспо парк", "expo park", "expo territory", "территория экспо")
+    ):
+        return [EXPO_TERRITORY_FACT]
+    if 51.12 <= lat <= 51.15 and 71.39 <= lon <= 71.43 and any(
+        alias in simplified for alias in ("хан шатыр", "khan shatyr")
+    ):
+        return [KHAN_SHATYR_FACT]
     return []

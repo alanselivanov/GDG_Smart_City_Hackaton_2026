@@ -400,6 +400,13 @@ def display_name(poi: dict, language: str) -> str:
 def eligible_for_intent(poi: dict, request: RecommendRequest | GroupRecommendRequest) -> bool:
     lowered = request.query.casefold()
     category = poi["category"]
+    if (any(term in lowered for term in STROLL_TERMS)
+            and category in {"landmark", "viewpoint"}
+            and poi["name"].casefold().strip() in {
+                "декоративный объект", "арт-объект", "арт объект", "памятник", "monument",
+            }
+            and not has_distinctive_evidence(poi, request.language)):
+        return False
     cuisines = explicit_cuisines(request.query)
     if cuisines and not any(cuisine_confirmed(poi, tag) for tag in cuisines):
         return False
@@ -412,6 +419,10 @@ def eligible_for_intent(poi: dict, request: RecommendRequest | GroupRecommendReq
             return False
     if request.categories:
         return True
+    if (any(term in lowered for term in ("парк", "park", "саябақ"))
+            and not any(term in lowered for term in UNUSUAL_TERMS)
+            and not (_preferences(request.query)[0] & {"food", "cafe", "museum"})):
+        return category == "park"
     if any(term in lowered for term in PLAYGROUND_TERMS):
         museum_requested = any(term in lowered for term in ("музе", "museum", "мұраж"))
         return category == "family" or (category == "museum" and museum_requested)
@@ -619,6 +630,15 @@ def _explain_and_act(poi: dict, request: RecommendRequest | GroupRecommendReques
     if poi["id"].startswith("2gis/"):
         local_hour = (request.starts_at or datetime.now(ASTANA_TZ)).astimezone(ASTANA_TZ).hour
         action = _sourced_food_activity(poi, request.query, language, local_hour) or action
+    if poi["category"] == "park" and not reviewed_fact and not description and not poi.get("attribute_groups"):
+        why = {
+            "ru": (f"Для прогулки «{name}» укладывается в заданное время: дорога займёт {walk} мин пешком, "
+                   f"а на посещение можно отвести {visit} мин."),
+            "en": (f"{name} fits your walking plan: it is {walk} min away on foot, "
+                   f"leaving {visit} min for a visit."),
+            "kk": (f"«{name}» серуен жоспарына сай келеді: жаяу жол {walk} минут, "
+                   f"ал саябаққа {visit} минут бөлуге болады."),
+        }[language]
     for requirement in sorted(requested_requirements(request)):
         if requirement_confirmed(poi, requirement):
             continue
@@ -644,6 +664,7 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
     desired, _, _ = _preferences(request.query)
     lowered = request.query.casefold()
     walking = any(term in lowered for term in WALK_TERMS)
+    stroll = any(term in lowered for term in STROLL_TERMS) and not request.categories
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
     requirements = requested_requirements(request)
     night = night_intent(request.query, request.starts_at or datetime.now(ASTANA_TZ))
@@ -682,9 +703,33 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
             score += 2 if category == "museum" else 0
         if walking and category == "park":
             score += 2
+        if stroll and category in {"landmark", "viewpoint"} and not (
+            poi.get("facts") or poi.get("description") or distinctive_attribute(poi)
+        ):
+            score -= 8
         score -= direct / 1700
         candidates.append((score, direct, poi))
     candidates.sort(key=lambda row: (-row[0], row[1], row[2]["id"]))
+    if stroll and any(row[2]["category"] == "park" for row in candidates):
+        candidates = [row for row in candidates if row[2]["category"] not in {"landmark", "viewpoint"}
+                      or row[2].get("description") or has_distinctive_evidence(row[2], request.language)]
+    if isinstance(request, GroupRecommendRequest) and any(person.interests for person in participants):
+        # Preserve options for different members before the expensive route
+        # matrix. Otherwise a dense cafe cluster can crowd out every park or
+        # museum even though the group asked for varied interests.
+        interest_counts: dict[str, int] = {}
+        for person in participants:
+            for interest in set(person.interests):
+                interest_counts[interest] = interest_counts.get(interest, 0) + 1
+        per_category = max(2, min(5, limit // max(1, len(interest_counts))))
+        # Use slices rather than an unbounded generator so each interest has
+        # a predictable share of the routing pool.
+        reserved = []
+        for category in sorted(interest_counts, key=lambda item: (-interest_counts[item], item)):
+            reserved.extend([row for row in candidates if row[2]["category"] == category][:per_category])
+        reserved_ids = {row[2]["id"] for row in reserved}
+        reserved.extend(row for row in candidates if row[2]["id"] not in reserved_ids)
+        return [poi for _, _, poi in reserved[:limit]]
     if proximity_requested(request.query):
         # Route the nearest plausible places too, even when sparse catalog
         # attributes would otherwise push them out of the semantic shortlist.
@@ -781,9 +826,11 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         # Query/category relevance and group fairness outweigh pure proximity.
         score = 4.0 * (category in desired) + 2.5 * interest_score
         if group:
+            # A heterogeneous group can still receive a useful compromise.
+            # Reward coverage smoothly and strongly penalize the longest walk.
             person_utility = [int(match) - walk / max_travel for match, walk in zip(matches, walks)]
-            score += 30 if all(matches) else 10 if sum(matches) >= math.ceil(len(matches) / 2) else 0
-            score += 12 * min(person_utility) + 6 * interest_score
+            score += 14 * interest_score + 8 * min(person_utility)
+            score -= 4 * (max(walks) - min(walks)) / max_travel
         score += 2.5 - longest / 15
         if selection_limit and proximity_requested(request.query):
             # Build an AI pool that contains nearby eligible options; the model
@@ -894,18 +941,24 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         dining = [item for item in scored if item[2]["category"] in {"food", "cafe"}]
         if dining:
             scored = dining
-    group_insufficient_coverage = False
+    group_compromise = False
     if group and any(person.interests for person in participants):
         majority = math.ceil(len(participants) / 2)
-        had_candidates = bool(scored)
-        scored = [item for item in scored if sum(item[1].participant_interest_matches or []) >= majority]
-        group_insufficient_coverage = had_candidates and not scored
+        shared = [item for item in scored if sum(item[1].participant_interest_matches or []) >= majority]
+        if shared:
+            scored = shared
+        else:
+            group_compromise = True
+            positive = [item for item in scored if any(item[1].participant_interest_matches or [])]
+            if positive:
+                scored = positive
+        # If there is no majority match, retain feasible real compromises.
     if requirements and any(all(item[1].requirement_status.get(requirement) == "confirmed"
                                 for requirement in requirements) for item in scored):
         scored = [item for item in scored if all(item[1].requirement_status.get(requirement) == "confirmed"
                                                   for requirement in requirements)]
     # Greedy diversification only when the query allows several kinds of places.
-    diversify = unusual or walking or len(desired) != 1
+    diversify = group_compromise or unusual or walking or len(desired) != 1
     chosen: list[Recommendation] = []
     chosen_pois: list[dict] = []
     remaining = scored[:]
@@ -929,8 +982,21 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                 continue
             adjusted = score
             if diversify:
-                category_penalty = 7 if short_stroll else 6 if stroll else 4.5 if unusual else 2.5
+                category_penalty = (14 if group_compromise else 7 if short_stroll else
+                                    6 if stroll else 4.5 if unusual else 2.5)
                 adjusted -= category_penalty * sum(poi["category"] == prev["category"] for prev in chosen_pois)
+                if group_compromise:
+                    matches = rec.participant_interest_matches or []
+                    already_covered = {index for prev in chosen
+                                       for index, matched in enumerate(prev.participant_interest_matches or [])
+                                       if matched}
+                    adjusted += 18 * sum(matched and index not in already_covered
+                                         for index, matched in enumerate(matches))
+                    family = "dining" if poi["category"] in {"food", "cafe"} else poi["category"]
+                    adjusted -= 10 * sum(
+                        ("dining" if prev["category"] in {"food", "cafe"} else prev["category"]) == family
+                        for prev in chosen_pois
+                    )
                 if unusual and feature_kind(poi):
                     adjusted -= 3 * sum(feature_kind(poi) == feature_kind(prev) for prev in chosen_pois)
                 adjusted -= 1.5 * sum(distance_m(poi["lat"], poi["lon"], prev["lat"], prev["lon"]) < 250
@@ -942,12 +1008,12 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         chosen.append(best)
         chosen_pois.append(best_poi)
         remaining = [item for item in remaining if item[1].poi.id != best.poi.id]
-    notices = selection_notices(chosen, request, start, group_insufficient_coverage)
+    notices = selection_notices(chosen, request, start)
     return chosen, notices, start
 
 
 def selection_notices(chosen: list[Recommendation], request: RecommendRequest | GroupRecommendRequest,
-                      start: datetime, group_insufficient_coverage: bool = False) -> list[str]:
+                      start: datetime) -> list[str]:
     """Recompute notices after the final AI or deterministic selection."""
     language = request.language
     lowered = request.query.casefold()
@@ -972,21 +1038,22 @@ def selection_notices(chosen: list[Recommendation], request: RecommendRequest | 
             "en": "No place has every requested feature confirmed. These are the best alternatives; unknown features are marked for each place.",
             "kk": "Барлық шарттары расталған орын табылмады. Ең жақсы баламалар көрсетілді; белгісіз шарттар әр жерде көрсетілген.",
         }[language])
+    if isinstance(request, GroupRecommendRequest) and chosen and any(
+        not all(rec.participant_interest_matches or []) for rec in chosen
+    ):
+        notices.append({
+            "ru": "Это компромисс для группы: не каждое место совпадает с интересами всех участников. Смотрите совпадения и время пути каждого.",
+            "en": "These are group compromises: not every place matches everyone's interests. Check each person's match and travel time.",
+            "kk": "Бұл топқа арналған ымыралы нұсқалар: әр орын барлығының қызығушылығына сай келмейді. Әр адамның сәйкестігі мен жол уақытын қараңыз.",
+        }[language])
     if not chosen:
-        if group_insufficient_coverage:
-            notices.append({
-                "ru": "Не найдено места, подходящего по интересам хотя бы большинству участников группы.",
-                "en": "No place matches the interests of at least a majority of the group.",
-                "kk": "Топ қатысушыларының кемінде көпшілігінің қызығушылығына сай орын табылмады.",
-            }[language])
+        if near_flight:
+            minutes_until_flight = max(0, math.floor((request.flight_departure_at - start).total_seconds() / 60))
+            message = (FLIGHT_NO_TIME[language].format(minutes=minutes_until_flight,
+                                                        buffer=request.airport_arrival_buffer_minutes)
+                       if minutes_until_flight <= request.airport_arrival_buffer_minutes
+                       else FLIGHT_EMPTY[language])
+            notices.append(message)
         else:
-            if near_flight:
-                minutes_until_flight = max(0, math.floor((request.flight_departure_at - start).total_seconds() / 60))
-                message = (FLIGHT_NO_TIME[language].format(minutes=minutes_until_flight,
-                                                            buffer=request.airport_arrival_buffer_minutes)
-                           if minutes_until_flight <= request.airport_arrival_buffer_minutes
-                           else FLIGHT_EMPTY[language])
-                notices.append(message)
-            else:
-                notices.append(NOTICES[language]["empty"])
+            notices.append(NOTICES[language]["empty"])
     return notices

@@ -12,14 +12,15 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.ai_selection import AISelection, score_candidates
+from app.ai_selection import AISelection, _validated, score_candidates
 from app.config import settings
 from app.db import Database
 from app.embeddings import EmbeddingError
-from app.generation import _local_guard, _place_context
+from app.generation import _focused_context, _local_guard, _place_context, enhance
 from app.ingest import normalize_element
 from app.main import create_app
-from app.models import GroupRecommendRequest, PoiFact, PoiOut, RecommendRequest, Recommendation
+from app.models import (GroupRecommendRequest, PoiFact, PoiOut, RecommendRequest,
+                        Recommendation, TwoGisAttributeGroup)
 from app.recommend import candidate_pois, eligible_for_intent
 
 
@@ -90,6 +91,34 @@ def test_ai_rejects_invented_place_and_ignoring_proximity():
         assert decision is None
 
 
+def test_ai_retries_inconsistent_scores_before_rules_fallback():
+    near, far = _rec("osm/near", "Near", 2), _rec("osm/far", "Far", 10)
+    request = RecommendRequest(query="Хочу поесть поближе", lat=51.1, lon=71.4)
+    replies = [
+        {"priorities": ["rating", "walking_time"],
+         "scores": {"osm/near": 95, "osm/far": 45},
+         "selected_ids": ["osm/far", "osm/near"]},
+        {"priorities": ["walking_time", "request_fit"],
+         "scores": {"osm/near": 95, "osm/far": 45},
+         "selected_ids": ["osm/near", "osm/far"]},
+    ]
+    calls = []
+    real_client = httpx.AsyncClient
+    def handler(_request):
+        calls.append(1)
+        reply = replies[min(len(calls) - 1, 1)]
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
+            "message": {"content": json.dumps(reply)}}]})
+    with patch("app.ai_selection.httpx.AsyncClient",
+               side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs)):
+        result = asyncio.run(score_candidates([near, far], request,
+            datetime(2026, 10, 19, 13, tzinfo=ZoneInfo("Asia/Almaty")),
+            replace(settings, llm_api_key="test-key")))
+    assert len(calls) == 2
+    assert result is not None
+    assert [rec.poi.id for rec in result.recommendations] == ["osm/near", "osm/far"]
+
+
 def test_nearby_place_survives_semantic_shortlist():
     request = RecommendRequest(query="Хочу поесть поближе", lat=51.09, lon=71.4)
     pois = [{"id": "near", "category": "food", "lat": 51.0901, "lon": 71.4001,
@@ -135,6 +164,84 @@ def test_group_scoring_sees_each_members_walk_and_interests():
     payload = json.loads(sent[0]["messages"][1]["content"])
     assert payload["group_interests"] == [["food"], ["cafe"], ["food"]]
     assert payload["candidates"][1]["participant_walk_minutes"] == [2, 6, 7]
+
+
+def test_disjoint_group_uses_ai_scores_with_a_category_compromise():
+    pool = [_rec(f"osm/food-{i}", f"Food {i}", 5) for i in range(3)]
+    park = _rec("osm/park", "Park", 6)
+    park.poi.category = "park"
+    pool.append(park)
+    for rec in pool:
+        rec.participant_interest_matches = ([True, False, False] if rec.poi.category == "food"
+                                            else [False, True, False])
+    request = GroupRecommendRequest(query="Где встретиться?", participants=[
+        {"lat": 51.09, "lon": 71.4, "interests": ["food"]},
+        {"lat": 51.09, "lon": 71.4, "interests": ["park"]},
+        {"lat": 51.09, "lon": 71.4, "interests": ["museum"]},
+    ])
+    scores = {"osm/food-0": 90, "osm/food-1": 80, "osm/food-2": 70, "osm/park": 60}
+    response = {"priorities": ["group_fairness"], "scores": scores,
+                "selected_ids": ["osm/food-0", "osm/food-1", "osm/food-2"]}
+    result = _validated(response, pool, request)
+    assert result is not None
+    assert result[2] == ["osm/food-0", "osm/food-1", "osm/park"]
+
+
+def test_group_selection_covers_distinct_members_even_when_cafes_score_higher():
+    pool = [_rec("osm/cafe", "Cafe", 5), _rec("osm/food", "Food", 6),
+            _rec("osm/food-2", "Food 2", 7), _rec("osm/park", "Park", 8),
+            _rec("osm/museum", "Museum", 9)]
+    for rec, category, index in zip(pool,
+                                    ("cafe", "food", "food", "park", "museum"),
+                                    (2, 4, 4, 0, 1)):
+        rec.poi.category = category
+        rec.participant_interest_matches = [i == index for i in range(5)]
+    request = GroupRecommendRequest(query="Где встретиться?", participants=[
+        {"lat": 51.09, "lon": 71.4, "interests": [interest]}
+        for interest in ("park", "museum", "cafe", "landmark", "food")
+    ])
+    scores = {rec.poi.id: 95 - 5 * index for index, rec in enumerate(pool)}
+    result = _validated({"priorities": ["group_fairness"], "scores": scores,
+                         "selected_ids": [rec.poi.id for rec in pool[:3]]}, pool, request)
+    assert result is not None
+    assert result[2] == ["osm/cafe", "osm/park", "osm/museum"]
+
+
+def test_generation_recovers_an_item_omitted_from_the_model_batch():
+    recs = [_rec("osm/first", "First", 5), _rec("osm/second", "Second", 6)]
+    generated = {rec.poi.id: {"id": rec.poi.id,
+        "why": f"До кафе {rec.walking_minutes} минут пешком; здесь можно сделать остановку на 45 минут.",
+        "what_to_do": "Выберите еду на месте.",
+        "used_fact_ids": ["route_and_category"]} for rec in recs}
+
+    async def model_reply(_client, _config, messages, response_format, _temperature):
+        if response_format["json_schema"]["name"] == "place_copy_verification":
+            return {"items": [{"id": rec.poi.id, "supported": True} for rec in recs]}
+        ids = [place["id"] for place in json.loads(messages[-1]["content"])["places"]]
+        return {"items": [generated[ids[0]]]}
+
+    with patch("app.generation._chat", side_effect=model_reply):
+        changed = asyncio.run(enhance(recs, "ru", replace(settings, llm_api_key="test-key"),
+            "Где поесть?", datetime(2026, 10, 19, 13, tzinfo=ZoneInfo("Asia/Almaty")), 90))
+    assert changed is True
+    assert [rec.text_source for rec in recs] == ["llm_verified", "llm_verified"]
+
+
+def test_generation_attribute_fact_ids_are_unique_across_groups():
+    rec = _rec("2gis/place", "Cafe", 5)
+    rec.poi.attribute_groups = [
+        TwoGisAttributeGroup.model_validate({"name": "Особенности", "attributes": [
+            {"name": "Летняя веранда"}, {"name": "Wi-Fi"}]}),
+        TwoGisAttributeGroup.model_validate({"name": "Меню", "attributes": [
+            {"name": "Пицца"}, {"name": "Летняя веранда"}]}),
+    ]
+    context = _place_context(rec, "Хочу поесть", datetime(2026, 10, 19, 13,
+                            tzinfo=ZoneInfo("Asia/Almaty")))
+    ids = [fact["id"] for fact in context["facts"]]
+    assert len(ids) == len(set(ids))
+    focused = _focused_context(context)
+    labels = [fact["text"] for fact in focused["facts"]]
+    assert labels.count("Летняя веранда") == 1
 
 
 def test_generated_why_must_explain_proximity_when_requested():

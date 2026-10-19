@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from app.attraction_facts import ATTRACTIONS, NUR_ALEM_FACT, VERIFIED_AT, name_matched_facts
+from app.attraction_facts import (ATTRACTIONS, EXPO_TERRITORY_FACT, KHAN_SHATYR_FACT,
+                                  NUR_ALEM_FACT, VERIFIED_AT, name_matched_facts)
 
 
 SCHEMA = """
@@ -109,7 +110,10 @@ class Database:
         selected = [(poi_id, fact) for poi_id in matched for fact in ATTRACTIONS[poi_id]["facts"]]
         selected.extend(dynamic)
         source_urls = {fact["source_url"] for entry in ATTRACTIONS.values()
-                       for fact in entry["facts"]} | {NUR_ALEM_FACT["source_url"]}
+                       for fact in entry["facts"]} | {
+                           fact["source_url"] for fact in
+                           (NUR_ALEM_FACT, EXPO_TERRITORY_FACT, KHAN_SHATYR_FACT)
+                       }
         con.execute("DELETE FROM poi_facts WHERE source_url IN ({})".format(
             ",".join("?" for _ in source_urls)), tuple(sorted(source_urls)))
         con.executemany(
