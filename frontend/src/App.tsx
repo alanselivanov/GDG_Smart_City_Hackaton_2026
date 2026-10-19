@@ -96,7 +96,7 @@ function RecommendationCard({ recommendation, index, selected, language, onShowM
   const cuisine = attributes.find((item) => /кухн|cuisine|асхан/iu.test(item))
   const price = attributes.find((item) => /^(?:чек|average check|орташа чек)/iu.test(item))
   const highlights = provider === '2GIS' ? [...new Set([cuisine, price, ...attributes.filter((item) => !/^(?:Премия|Завтрак)(?:\s|$)/iu.test(item))].filter((item): item is string => Boolean(item)))].slice(0, 2) : []
-  const preview = highlights.length ? null : compactWhy(recommendation) || recommendation.what_to_do
+  const preview = compactWhy(recommendation) || recommendation.why.trim()
   const facts = [...new Map([...(poi.facts || []), ...(recommendation.evidence || [])].map((fact) => [fact.key, fact])).values()]
   const requirements = Object.entries(recommendation.requirement_status || {}) as [Requirement, 'confirmed' | 'unknown'][]
 
@@ -108,8 +108,8 @@ function RecommendationCard({ recommendation, index, selected, language, onShowM
           <div className="card-copy">
             <div className="card-topline"><span className="category-badge">{copy.categories[poi.category]}</span><span className="card-provider">{provider === '2GIS' ? '2GIS' : 'OSM'}</span></div>
             <h3>{poi.name}</h3>
+            {preview && <p className="card-reason"><strong>{copy.why}</strong> {preview}</p>}
             {highlights.length > 0 && <div className="card-highlights">{highlights.map((item) => <span key={item}>{item}</span>)}</div>}
-            {preview && <p className="card-reason">{preview}</p>}
           </div>
           <div className="card-aside">
             <strong className="card-walk">{recommendation.participant_walking_minutes ? copy.groupWalk(recommendation.walking_minutes) : copy.walk(recommendation.walking_minutes)}</strong>
@@ -135,7 +135,7 @@ function RecommendationCard({ recommendation, index, selected, language, onShowM
           {recommendation.participant_walking_minutes && <div className="group-result"><strong>{copy.groupWalks}</strong><div>{recommendation.participant_walking_minutes.map((minutes, memberIndex) => <span key={memberIndex}>{memberIndex + 1} · {formatBudget(minutes, language)}</span>)}</div>{recommendation.group_meeting_at && <p>{copy.groupMeet} {formatStart(recommendation.group_meeting_at, language)}</p>}</div>}
           {recommendation.airport_transfer_minutes != null && <div className="flight-result"><strong>{copy.airportTransfer}</strong><span>≈ {formatBudget(recommendation.airport_transfer_minutes, language)}</span>{recommendation.latest_leave_for_airport_at && <span>{copy.leaveAirportBy} {formatStart(recommendation.latest_leave_for_airport_at, language)}</span>}</div>}
           <details className="place-data"><summary>{copy.placeData}</summary><div className="place-data-content">
-            {highlights.length > 0 && <p><strong>{copy.why}</strong> {recommendation.why}</p>}
+            <p><strong>{copy.why}</strong> {recommendation.why}</p>
             {poi.name_is_generic && <p>{copy.genericName}</p>}
             {recommendation.missing_information.length > 0 && <section><strong>{copy.missing}</strong><ul>{recommendation.missing_information.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul></section>}
             {requirements.length > 0 && <section><strong>{copy.requirements}</strong><div className="data-chips">{requirements.map(([requirement, status]) => <span key={requirement} className={status === 'confirmed' ? 'confirmed' : 'uncertain'}>{requirementLabels[language][requirement]} · {status === 'confirmed' ? copy.confirmed : copy.unconfirmed}</span>)}</div></section>}
