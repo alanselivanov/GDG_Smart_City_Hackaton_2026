@@ -10,6 +10,7 @@ import httpx
 from app.attributes import relevant_facts
 from app.config import Settings
 from app.models import Recommendation
+from app.recommend import proximity_requested
 
 
 def _schema(name: str, properties: dict, required: list[str]) -> dict:
@@ -54,6 +55,7 @@ def _place_context(rec: Recommendation, query: str, planned_at: datetime | None)
         "source_url": rec.poi.source_url, "fetched_at": rec.poi.fetched_at,
         "facts": fact_catalog, "requirements": rec.requirement_status,
         "missing_information": rec.missing_information,
+        "distance_priority": proximity_requested(query),
         "latest_leave_for_airport_at": (rec.latest_leave_for_airport_at.isoformat()
                                         if rec.latest_leave_for_airport_at else None),
     }
@@ -119,6 +121,14 @@ def _local_guard(item: dict, rec: Recommendation, place: dict) -> bool:
     action_stems = {word[:5] for word in re.findall(r"[^\W\d_]{5,}", action.casefold())}
     cited_stems = {word[:5] for word in re.findall(r"[^\W\d_]{5,}", cited_text)}
     if not action_stems & cited_stems:
+        return False
+    if place["distance_priority"]:
+        why_stems = {word[:5] for word in re.findall(r"[^\W\d_]{5,}", why.casefold())}
+        if not why_stems & cited_stems:
+            return False
+    if place["distance_priority"] and not re.search(
+        rf"(?iu)(?<!\d){rec.walking_minutes}\s*(?:мин(?:ут[а-я]*)?|minutes?|min\b)", why
+    ):
         return False
     # These sales-like claims need actual supporting source text, not a
     # plausible sounding inference from category or venue name.
@@ -192,6 +202,8 @@ async def enhance(recommendations: list[Recommendation], language: str, config: 
             "dishes explicitly listed in a menu fact. "
             "A steakhouse label does not prove that a specific steak is on today's menu. "
             "Use planned_local_time when choosing meal words; never say lunch at night. "
+            "When distance_priority is true, include the exact walking_minutes AND "
+            "one specific cited place fact in 'why'; do not claim it is the absolute nearest. "
             "Never claim an unconfirmed requirement. Missing details stay in missing_information. "
             "For a flight, include the supplied latest airport departure time in what_to_do. "
             "Avoid repetitive category templates. Do not add facts inferred only from the venue name.")},
@@ -219,6 +231,8 @@ async def enhance(recommendations: list[Recommendation], language: str, config: 
                         "Use a simple factual sentence with the exact most relevant 2GIS "
                         "attribute names; the action MUST also mention at least one cited attribute "
                         "by name (for example, 'choose the listed Turkish cuisine'). "
+                        "When distance_priority is true, mention the exact walking_minutes "
+                        "and a specific cited place fact in why. "
                         "No adjectives such as tasty, cozy, varied, great, cheap, fast, ideal. "
                         "Do not mention a specific dish unless it is explicitly in a cited menu attribute. "
                         "For a steakhouse without a dish fact, suggest checking the menu or booking a table. "

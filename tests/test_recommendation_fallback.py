@@ -298,6 +298,23 @@ class RecommendationPipelineTests(unittest.TestCase):
         self.assertIn("node/1", routed)
         self.assertEqual(response.json()["recommendations"][0]["poi"]["id"], "node/1")
 
+    def test_explicit_cuisine_search_only_routes_confirmed_places(self):
+        items = [
+            {"id": "generic", "name": "Generic restaurant", "point": {"lat": 51.0901, "lon": 71.4001},
+             "rubrics": [{"name": "Рестораны"}]},
+            {"id": "korean", "name": "Korean House", "point": {"lat": 51.091, "lon": 71.401},
+             "rubrics": [{"name": "Рестораны"}], "attribute_groups": [
+                 {"name": "Ресторан / Кафе", "attributes": [
+                     {"name": "Корейская кухня", "tag": "food_service_food_korean"}]}]},
+        ]
+        response, searches, _, routed, _ = self.call(self.reply(items), with_osm=False,
+            payload={"query": "Я хочу поесть корейскую кухню", "lat": 51.09, "lon": 71.4})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([query for query, _ in searches], ["корейская кухня"] * 2)
+        self.assertEqual(routed, ["2gis/korean"])
+        self.assertEqual([item["poi"]["name"] for item in response.json()["recommendations"]],
+                         ["Korean House"])
+
     def test_explicit_osm_endpoint_does_not_call_2gis(self):
         response, points, _, _, _ = self.call(None, path="/v1/osm/recommendations")
         self.assertEqual(response.status_code, 200, response.text)

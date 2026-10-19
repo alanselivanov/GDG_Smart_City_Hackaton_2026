@@ -270,6 +270,8 @@ function App() {
                 <details className="result-details"><summary>{copy.selectionDetails}</summary><div>
                   <p>{copy.selectedFor(result.context_used.time_budget_minutes != null ? formatBudget(result.context_used.time_budget_minutes, displayLanguage) : copy.timeFromQuery)}{result.context_used.max_travel_minutes ? ` · ${copy.travelLimit(result.context_used.max_travel_minutes)}` : ''}{result.context_used.starts_at ? ` · ${copy.startAt(formatStart(result.context_used.starts_at, displayLanguage))}` : ''}.</p>
                   {result.notices.map((notice, index) => <p key={index}>{notice}</p>)}
+                  {result.context_used.search_tag_method && result.context_used.search_tag_method !== 'not_used' && Boolean(result.context_used.provider_search_queries?.length) && <p>{copy.searchPlan[result.context_used.search_tag_method]} {copy.searchQueries} {result.context_used.provider_search_queries?.join(', ')}.</p>}
+                  {result.context_used.selection_method && <p>{copy.selectionMode[result.context_used.selection_method]}</p>}
                   <p>{copy.sources} {result.context_used.source_license_urls ? Object.entries(result.context_used.source_license_urls).map(([provider, url], index) => <span key={provider}>{index > 0 ? ' · ' : ''}<a href={url} target="_blank" rel="noopener noreferrer">{provider === '2gis' ? '2GIS' : 'OpenStreetMap'}</a></span>) : <a href={result.source_license_url} target="_blank" rel="noopener noreferrer">{result.source}</a>}. {result.context_used.fallback_used ? `${copy.fallback} ` : ''}{copy.generated[result.generated_with]}</p>
                 </div></details>
               </div> :

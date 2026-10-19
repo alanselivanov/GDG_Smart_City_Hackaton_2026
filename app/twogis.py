@@ -13,6 +13,7 @@ from app.models import (TwoGisAttribute, TwoGisAttributeGroup, TwoGisNearbyReque
                         TwoGisNearbyResponse, TwoGisPoi)
 from app.attraction_facts import NUR_ALEM_2GIS_BUILDING_ID, VERIFIED_AT, name_matched_facts
 from app.recommend import distance_m
+from app.search_tags import CATEGORIES, CUISINES, explicit_cuisines
 
 
 PLACES_URL = "https://catalog.api.2gis.com/3.0/items"
@@ -31,6 +32,12 @@ class TwoGisError(Exception):
 
 def search_plan(query: str) -> tuple[str, int, str]:
     text = query.casefold()
+    cuisines = explicit_cuisines(query)
+    if cuisines:
+        return CUISINES[cuisines[0]][0], 3000, "food"
+    for category, term in CATEGORIES.items():
+        if text.strip() == term:
+            return term, 1500 if category == "cafe" else 3000, category
     # Dining with children is a restaurant request, not a playground request.
     if any(word in text for word in ("детское меню", "детским меню", "kids menu", "балалар мәзір")):
         return "кафе", 1500, "cafe"

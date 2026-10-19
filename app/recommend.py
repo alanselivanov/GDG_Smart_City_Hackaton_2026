@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from app.attributes import (attribute_for_requirement, attribute_score, average_check,
                             distinctive_attribute, fact_label, price_ceiling, relevant_facts)
 from app.models import GroupRecommendRequest, PoiFact, PoiOut, RecommendRequest, Recommendation
+from app.search_tags import cuisine_confirmed, explicit_cuisines
 
 
 ASTANA_TZ = ZoneInfo("Asia/Almaty")
@@ -31,6 +32,7 @@ KEYWORDS = {
 SOCKET_TERMS = ("розет", "socket", "power outlet", "қуат")
 QUIET_TERMS = ("тихо", "тихое", "спокой", "quiet", "calm", "тыныш")
 WALK_TERMS = ("прогул", "гулять", "пешком", "walk", "walking", "серуен", "жаяу")
+PROXIMITY_PATTERN = re.compile(r"(?iu)поближ|ближе|близк|недалеко|поблизости|жақын|closer|nearby|nearest|close by|near me")
 STROLL_TERMS = ("прогул", "гулять", "walk", "серуен")
 UNUSUAL_TERMS = ("необыч", "нестандарт", "unusual", "unique", "ерекше")
 INTERACTIVE_TERMS = ("интерактив", "interactive", "интерактивті")
@@ -366,9 +368,17 @@ def effective_max_travel(request: RecommendRequest | GroupRecommendRequest) -> i
     if request.max_travel_minutes is not None:
         return request.max_travel_minutes
     lowered = request.query.casefold()
+    if any(term in lowered for term in STROLL_TERMS):
+        # A long walk is the activity itself. Keep enough time for the place
+        # while allowing a destination farther than a short outing would.
+        return min(90, max(10, request.time_budget_minutes // 2))
     if any(term in lowered for term in UNUSUAL_TERMS) and any(term in lowered for term in WALK_TERMS):
         return min(45, max(10, request.time_budget_minutes // 2))
     return min(35, max(10, request.time_budget_minutes // 3))
+
+
+def proximity_requested(query: str) -> bool:
+    return PROXIMITY_PATTERN.search(query) is not None
 
 
 def _name(poi: dict, language: str) -> str:
@@ -390,6 +400,9 @@ def display_name(poi: dict, language: str) -> str:
 def eligible_for_intent(poi: dict, request: RecommendRequest | GroupRecommendRequest) -> bool:
     lowered = request.query.casefold()
     category = poi["category"]
+    cuisines = explicit_cuisines(request.query)
+    if cuisines and not any(cuisine_confirmed(poi, tag) for tag in cuisines):
+        return False
     if any(term in lowered for term in UNUSUAL_TERMS) and not has_distinctive_evidence(poi, request.language):
         return False
     if "interactive" in requested_requirements(request):
@@ -403,7 +416,10 @@ def eligible_for_intent(poi: dict, request: RecommendRequest | GroupRecommendReq
         museum_requested = any(term in lowered for term in ("музе", "museum", "мұраж"))
         return category == "family" or (category == "museum" and museum_requested)
     if any(term in lowered for term in UNUSUAL_TERMS):
-        return category in {"museum", "viewpoint", "landmark", "park", "activity", "nightlife", "culture"}
+        allowed = {"museum", "viewpoint", "landmark", "park", "activity", "nightlife", "culture"}
+        if _preferences(request.query)[0] & {"food", "cafe"}:
+            allowed.update({"food", "cafe"})
+        return category in allowed
     if any(term in lowered for term in SIGHTSEEING_TERMS):
         return category in {"landmark", "museum", "viewpoint", "park"}
     if any(term in lowered for term in STROLL_TERMS):
@@ -669,6 +685,13 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
         score -= direct / 1700
         candidates.append((score, direct, poi))
     candidates.sort(key=lambda row: (-row[0], row[1], row[2]["id"]))
+    if proximity_requested(request.query):
+        # Route the nearest plausible places too, even when sparse catalog
+        # attributes would otherwise push them out of the semantic shortlist.
+        nearest = sorted(candidates, key=lambda row: (row[1], -row[0], row[2]["id"]))[:min(20, limit // 3)]
+        reserved_ids = {row[2]["id"] for row in nearest}
+        ordered = nearest + [row for row in candidates if row[2]["id"] not in reserved_ids]
+        return [poi for _, _, poi in ordered[:limit]]
     if not request.categories and any(term in lowered for term in STROLL_TERMS):
         # Keep a few good candidates of each walkable kind before routing.
         # Otherwise a dense park cluster can fill the whole routing shortlist.
@@ -685,7 +708,8 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
 def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
          routes: dict[str, list[tuple[int, int] | None]],
          semantic_scores: dict[str, float] | None = None,
-         airport_routes: dict[str, tuple[int, int] | None] | None = None) -> tuple[list[Recommendation], list[str], datetime]:
+         airport_routes: dict[str, tuple[int, int] | None] | None = None,
+         selection_limit: int | None = None) -> tuple[list[Recommendation], list[str], datetime]:
     language = request.language
     start = (request.starts_at or datetime.now(ASTANA_TZ)).astimezone(ASTANA_TZ)
     max_travel = effective_max_travel(request)
@@ -761,6 +785,10 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
             score += 30 if all(matches) else 10 if sum(matches) >= math.ceil(len(matches) / 2) else 0
             score += 12 * min(person_utility) + 6 * interest_score
         score += 2.5 - longest / 15
+        if selection_limit and proximity_requested(request.query):
+            # Build an AI pool that contains nearby eligible options; the model
+            # still makes the final choice and order from that pool.
+            score -= longest * 1.1
         if short_stroll:
             # A short outing should leave useful time at the place. The hard
             # travel and visit limits above still decide feasibility.
@@ -881,7 +909,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
     chosen: list[Recommendation] = []
     chosen_pois: list[dict] = []
     remaining = scored[:]
-    while remaining and len(chosen) < request.limit:
+    while remaining and len(chosen) < (selection_limit or request.limit):
         eligible = []
         for score, rec, poi in remaining:
             if any(same_place(rec, prev) for prev in chosen):
@@ -914,6 +942,18 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
         chosen.append(best)
         chosen_pois.append(best_poi)
         remaining = [item for item in remaining if item[1].poi.id != best.poi.id]
+    notices = selection_notices(chosen, request, start, group_insufficient_coverage)
+    return chosen, notices, start
+
+
+def selection_notices(chosen: list[Recommendation], request: RecommendRequest | GroupRecommendRequest,
+                      start: datetime, group_insufficient_coverage: bool = False) -> list[str]:
+    """Recompute notices after the final AI or deterministic selection."""
+    language = request.language
+    lowered = request.query.casefold()
+    _, wants_socket, wants_quiet = _preferences(request.query)
+    requirements = requested_requirements(request)
+    near_flight = request.flight_departure_at is not None
     notices = [NOTICES[language]["walking"]]
     if any(rec.open_status == "unknown" for rec in chosen):
         notices.append(NOTICES[language]["unknown_hours"])
@@ -949,4 +989,4 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                 notices.append(message)
             else:
                 notices.append(NOTICES[language]["empty"])
-    return chosen, notices, start
+    return notices

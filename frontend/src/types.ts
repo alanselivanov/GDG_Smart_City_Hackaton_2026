@@ -69,6 +69,13 @@ export interface RecommendResponse {
     source_license_urls?: Record<string, string>
     fallback_used?: boolean
     fallback_reason?: string | null
+    search_tag_method?: 'ai_tags' | 'rules_fallback' | 'not_used'
+    search_tags?: string[]
+    provider_search_queries?: string[]
+    selection_method?: 'ai_scored' | 'rules_fallback' | 'single_candidate' | 'no_candidates'
+    selection_candidate_count?: number
+    selection_priorities?: string[]
+    selection_scores?: Record<string, number>
   }
   source: string
   source_license_url: string

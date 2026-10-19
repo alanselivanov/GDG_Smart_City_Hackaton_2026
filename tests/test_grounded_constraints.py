@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.models import GroupRecommendRequest, RecommendRequest, TwoGisPoi
-from app.recommend import candidate_pois, night_intent, rank
+from app.recommend import candidate_pois, effective_max_travel, night_intent, rank
 from app.twogis import as_candidate, search_plan
 from app.attributes import attribute_for_requirement
 from app.db import Database
@@ -28,6 +28,20 @@ def poi(identity, name, category, *, hours="24/7", tags=None, attributes=None, f
 def routes(places, walks=None):
     walks = walks or {}
     return {place["id"]: [(400, walks.get(place["id"], 300))] for place in places}
+
+
+def test_long_walk_does_not_use_the_short_outing_travel_cap():
+    place = poi("monument", "City monument", "landmark", tags={"historic": "monument"})
+    long_walk = RecommendRequest(lat=51.1, lon=71.41,
+        query="Хочу погулять 4 часа пешком", time_budget_minutes=240, starts_at=DAY)
+    assert effective_max_travel(long_walk) == 90
+    recommendations, _, _ = rank([place], long_walk, routes([place], {"monument": 37 * 60}))
+    assert [rec.poi.id for rec in recommendations] == ["monument"]
+
+    short_walk = long_walk.model_copy(update={"time_budget_minutes": 60})
+    assert effective_max_travel(short_walk) == 30
+    recommendations, _, _ = rank([place], short_walk, routes([place], {"monument": 37 * 60}))
+    assert not recommendations
 
 
 def test_socket_requirement_prefers_proof_and_falls_back_to_three():

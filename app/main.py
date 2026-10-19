@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.ai_selection import score_candidates
 from app.config import Settings, settings
 from app.db import Database
 from app.embeddings import EmbeddingError, semantic_scores
@@ -19,8 +20,10 @@ from app.models import (Category, GroupRecommendRequest, Language, PoiOut, Prima
                         RecommendResponse, TwoGisNearbyRequest, TwoGisNearbyResponse)
 from app.recommend import (ASTANA_TZ, candidate_pois, display_name, distance_m, effective_max_travel, generic_name,
                            infer_budget, infer_flight_minutes, is_before_flight, localized_description,
-                           localized_facts, night_intent, NIGHT_TERMS, STROLL_TERMS, rank)
+                           localized_facts, night_intent, NIGHT_TERMS, STROLL_TERMS, rank,
+                           selection_notices)
 from app.routing import RoutingError, airport_transfers, pedestrian_matrix
+from app.search_tags import SearchTags, explicit_cuisines, plan_search, search_queries
 from app.twogis import TwoGisError, as_candidate, nearby as twogis_nearby
 from app.time_intent import infer_start
 
@@ -213,6 +216,7 @@ def create_app(config: Settings = settings) -> FastAPI:
             request = request.model_copy(update={"lat": origin["lat"], "lon": origin["lon"]})
         twogis_count = 0
         twogis_reason = None
+        search_tags = SearchTags((), "not_used")
         if include_twogis:
             if len(request.query) < 2:
                 twogis_reason = "missing_search_query"
@@ -221,7 +225,8 @@ def create_app(config: Settings = settings) -> FastAPI:
             else:
                 # Resolve the origin first. Every provider and Valhalla receives
                 # the same start, including when the device is elsewhere.
-                searches = [request.query]
+                search_tags = await plan_search(request.query, config)
+                searches = search_queries(request.query, search_tags)
                 lowered = request.query.casefold()
                 if night_intent(request.query, start) and not any(
                     term in lowered for term in NIGHT_TERMS
@@ -267,14 +272,18 @@ def create_app(config: Settings = settings) -> FastAPI:
                     ) else "2gis_empty"
         if not pois:
             raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
+        embedding_fallback = False
         try:
             if request.query:
                 async with embedding_lock:
                     scores = await semantic_scores(db, pois, request.query, config)
             else:
                 scores = {}
-        except EmbeddingError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except EmbeddingError:
+            # Semantic retrieval improves ranking, but a transient API failure
+            # must not make the cached POIs and route planner unavailable.
+            scores = {}
+            embedding_fallback = True
         candidates = candidate_pois(pois, request, scores, limit=40 if group else 60)
         participants = request.participants if group else [request]
         airport_reference = db.route_reference("airport") if flight_requested else None
@@ -293,7 +302,26 @@ def create_app(config: Settings = settings) -> FastAPI:
                 transfer_routes = None
         except RoutingError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        recommendations, notices, start = rank(candidates, request, routes, scores, transfer_routes)
+        ai_enabled = bool(config.llm_api_key and request.query)
+        pool, notices, start = rank(candidates, request, routes, scores, transfer_routes,
+                                    selection_limit=18 if ai_enabled else None)
+        selection = (await score_candidates(pool, request, start, config)
+                     if ai_enabled and len(pool) > 1 else None)
+        recommendations = selection.recommendations if selection else pool[:request.limit]
+        if ai_enabled and pool:
+            notices = selection_notices(recommendations, request, start)
+        if embedding_fallback:
+            notices.append({
+                "ru": "Смысловой поиск временно недоступен. Места подобраны по доступным категориям, атрибутам и расстоянию.",
+                "en": "Semantic search is temporarily unavailable. Places were selected using available categories, attributes, and distance.",
+                "kk": "Мағыналық іздеу уақытша қолжетімсіз. Орындар қолда бар санаттар, атрибуттар және қашықтық бойынша таңдалды.",
+            }[request.language])
+        if not recommendations and explicit_cuisines(request.query):
+            notices.append({
+                "ru": "Место с подтверждённой запрошенной кухней, подходящее по времени и расстоянию, не найдено.",
+                "en": "No place with the requested cuisine confirmed fits the time and distance limits.",
+                "kk": "Сұралған асханасы расталған және уақыт пен қашықтыққа сай орын табылмады.",
+            }[request.language])
         await enhance(recommendations, request.language, config, request.query, start)
         generated_count = sum(rec.text_source == "llm_verified" for rec in recommendations)
         context = {
@@ -310,18 +338,29 @@ def create_app(config: Settings = settings) -> FastAPI:
             "participant_count": len(request.participants) if group else 1,
             "location_used": True,
             "origin": origin,
-            "retrieval_method": "openai_embeddings_cosine_and_filters" if request.query else "geospatial_and_filters",
-            "embedding_model": config.embedding_model if request.query else None,
+            "retrieval_method": ("openai_embeddings_cosine_and_filters" if request.query and not embedding_fallback
+                                 else "geospatial_and_filters"),
+            "embedding_model": config.embedding_model if request.query and not embedding_fallback else None,
+            "embedding_fallback_used": embedding_fallback,
             "distance_method": "valhalla_osm_pedestrian_matrix",
             "routing_provider": config.routing_url,
             "llm_text_policy": "generated_from_catalog_facts_then_verified",
             "llm_generated_count": generated_count,
+            "selection_method": ("ai_scored" if selection else
+                                 "single_candidate" if len(pool) == 1 else
+                                 "rules_fallback" if pool else "no_candidates"),
+            "selection_candidate_count": len(pool),
+            "selection_priorities": selection.priorities if selection else [],
+            "selection_scores": selection.selected_scores if selection else {},
         }
         if inferred_start:
             context["time_interpretation"] = {"phrase": inferred_start[1],
                                               "local_time": inferred_start[0].isoformat()}
         if include_twogis:
             context.update({
+                "search_tag_method": search_tags.method,
+                "search_tags": list(search_tags.tags),
+                "provider_search_queries": searches if search_tags.method != "not_used" else [],
                 "providers": [provider for provider, used in (("osm", len(pois) > twogis_count),
                                                                ("2gis", twogis_count > 0)) if used],
                 "2gis_candidate_count": twogis_count,

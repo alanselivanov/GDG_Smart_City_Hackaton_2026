@@ -37,6 +37,9 @@ type Copy = {
   startAt: (date: string) => string
   sources: string
   fallback: string
+  searchPlan: Record<'ai_tags' | 'rules_fallback', string>
+  searchQueries: string
+  selectionMode: Record<'ai_scored' | 'rules_fallback' | 'single_candidate' | 'no_candidates', string>
   generated: Record<'llm_verified' | 'mixed' | 'grounded_templates', string>
   emptyFlight: string
   emptyPlaces: string
@@ -64,6 +67,9 @@ export const resultCopy: Record<Language, Copy> = {
     selectionDetails: 'Как мы подобрали места и что проверить?', selectedFor: (budget) => `Учтено: ${budget} на прогулку`,
     travelLimit: (n) => `до ${n} мин пешком`, startAt: (date) => `начало ${date}`,
     sources: 'Данные:', fallback: '2GIS сейчас недоступен, использованы данные OSM.',
+    searchPlan: { ai_tags: 'ИИ выделил признаки запроса.', rules_fallback: 'Признаки запроса определены правилами.' },
+    searchQueries: 'Поиск в 2GIS:',
+    selectionMode: { ai_scored: 'Места оценил и выбрал ИИ из проверенных кандидатов.', rules_fallback: 'Места выбраны по правилам: оценка ИИ недоступна или не прошла проверку.', single_candidate: 'Найден один подходящий кандидат.', no_candidates: 'Подходящих кандидатов не найдено.' },
     generated: { llm_verified: 'Текст сгенерирован и проверен ИИ по данным мест.', mixed: 'Текст частично сгенерирован и проверен ИИ, частично составлен по данным мест.', grounded_templates: 'Текст составлен по данным мест.' },
     emptyFlight: 'Подходящих мест перед вылетом нет', emptyPlaces: 'Подходящих мест пока нет',
     emptyFlightHint: 'Проверьте расчёт ниже. Если время рейса или нужный запас отличаются, откройте «Уточнить поиск» и укажите их.',
@@ -87,6 +93,9 @@ export const resultCopy: Record<Language, Copy> = {
     selectionDetails: 'Орындар қалай таңдалды және нені тексеру керек?', selectedFor: (budget) => `Ескерілгені: серуенге ${budget}`,
     travelLimit: (n) => `жаяу жүруге ${n} мин дейін`, startAt: (date) => `басталуы ${date}`,
     sources: 'Деректер:', fallback: '2GIS қолжетімсіз, OSM деректері қолданылды.',
+    searchPlan: { ai_tags: 'ЖИ сұраудың белгілерін анықтады.', rules_fallback: 'Сұраудың белгілері ережелер бойынша анықталды.' },
+    searchQueries: '2GIS ішіндегі іздеу:',
+    selectionMode: { ai_scored: 'ЖИ орындарды тексерілген үміткерлер арасынан бағалап таңдады.', rules_fallback: 'Орындар ережелер бойынша таңдалды: ЖИ бағалауы қолжетімсіз не тексеруден өтпеді.', single_candidate: 'Бір ғана сәйкес орын табылды.', no_candidates: 'Сәйкес орын табылмады.' },
     generated: { llm_verified: 'Мәтін орын деректері бойынша ЖИ көмегімен жасалып, тексерілді.', mixed: 'Мәтіннің бір бөлігі ЖИ көмегімен жасалып, тексерілді; қалғаны орын деректерінен құрастырылды.', grounded_templates: 'Мәтін орын деректерінен құрастырылды.' },
     emptyFlight: 'Ұшуға дейін сәйкес орын табылмады', emptyPlaces: 'Әзірге сәйкес орын жоқ',
     emptyFlightHint: 'Төмендегі есепті тексеріңіз. Рейс уақыты не қажет қор басқа болса, «Іздеуді нақтылау» бөлімінде көрсетіңіз.',
@@ -110,6 +119,9 @@ export const resultCopy: Record<Language, Copy> = {
     selectionDetails: 'How were these places chosen?', selectedFor: (budget) => `Considered: ${budget} for the outing`,
     travelLimit: (n) => `up to ${n} min on foot`, startAt: (date) => `starts ${date}`,
     sources: 'Sources:', fallback: '2GIS is unavailable; OSM data was used.',
+    searchPlan: { ai_tags: 'AI extracted the request tags.', rules_fallback: 'Request tags were determined by rules.' },
+    searchQueries: '2GIS search:',
+    selectionMode: { ai_scored: 'AI scored and chose these places from verified candidates.', rules_fallback: 'Places were selected by rules because AI scoring was unavailable or invalid.', single_candidate: 'Only one eligible place was found.', no_candidates: 'No eligible places were found.' },
     generated: { llm_verified: 'Text was generated and checked against place data.', mixed: 'Some text was generated and checked; the rest was composed from place data.', grounded_templates: 'Text was composed from place data.' },
     emptyFlight: 'No suitable place before your flight', emptyPlaces: 'No suitable places yet',
     emptyFlightHint: 'Check the calculation below. If your flight time or required buffer differs, enter them under “Refine search”.',
