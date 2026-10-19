@@ -40,6 +40,10 @@ def search_plan(query: str) -> tuple[str, int, str]:
         return "ресторан", 3000, "food"
     if any(word in text for word in ("прогул", "гулять", "парк", "walk", "park", "саябақ", "серуен")):
         return "парк", 3000, "park"
+    if any(word in text for word in ("смотров", "обзорная площадка", "viewpoint", "көрініс алаң")):
+        return "смотровая площадка", 3000, "viewpoint"
+    if any(word in text for word in ("памятник", "монумент", "мемориал", "скульптур", "monument", "memorial")):
+        return "памятник", 3000, "landmark"
     if any(word in text for word in ("ночью", "ночное", "ночной", "ночная", "night", "түнгі", "түнде")):
         return "бар", 3000, "nightlife"
     if any(word in text for word in ("музе", "museum", "мұраж")) and not any(
@@ -120,7 +124,9 @@ def _poi(item: dict, request: TwoGisNearbyRequest, radius_m: int, intent: str) -
             description=description if isinstance(description, str) and description.strip() else None,
             rubrics=rubric_names,
             attribute_groups=_attribute_groups(item.get("attribute_groups")),
-            attributes_language="ru" if request.language == "en" else request.language,
+            # The Astana catalog search is reliably populated in ru_KZ. The
+            # response language describes catalog facts, not the UI language.
+            attributes_language="ru",
             rating=float(rating) if rating is not None else None,
             review_count=int(count) if count is not None else None,
             rating_count=int(rating_count) if rating_count is not None else None,
@@ -182,14 +188,26 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
     combined = f"{rubric_text} {poi.name.casefold()}"
     matched_facts = name_matched_facts(poi.name, poi.lat, poi.lon, f"2gis/{poi.id}")
     expo_sphere = poi.id == NUR_ALEM_2GIS_BUILDING_ID and bool(matched_facts)
+    if not matched_facts and re.match(
+        r"(?iu)^\s*(?:улица|ул\.|проспект|пр-т|переулок|проезд|шоссе|street|avenue)\b",
+        poi.name,
+    ):
+        # An address card with a broad attraction rubric is not a named POI.
+        return {}
     if any(word in combined for word in ("музе", "museum", "мұраж")):
         category = "museum"
     elif re.search(r"(?iu)\b(?:бар|паб|ночной клуб|караоке|лаунж|pub|bar|night club)\b", combined):
         category = "nightlife"
+    elif any(word in combined for word in ("смотровая площадка", "обзорная площадка", "viewpoint", "көрініс алаң")):
+        category = "viewpoint"
     elif any(word in combined for word in ("площадк", "playground", "ойын алаң")):
         category = "family"
+    elif any(word in rubric_text for word in ("памятник", "монумент", "мемориал", "скульптур", "monument", "memorial")):
+        category = "landmark"
     elif any(word in combined for word in ("парк", "сквер", "park", "саябақ")):
         category = "park"
+    elif any(word in combined for word in ("памятник", "монумент", "мемориал", "скульптур", "monument", "memorial")):
+        category = "landmark"
     elif any(word in combined for word in ("коф", "кафе", "coffee", "cafe")):
         category = "cafe"
     elif any(word in combined for word in ("ресторан", "restaurant", "столов", "кухня", "dining")):
@@ -205,7 +223,7 @@ def as_candidate(poi: TwoGisPoi, intent: str, language: str) -> dict:
     if expo_sphere:
         tags["2gis:catalog_name"] = poi.name
     if poi.description:
-        tags[f"description:{language}"] = poi.description
+        tags[f"description:{poi.attributes_language or language}"] = poi.description
     if category == "museum" and any(phrase in f"{description} {poi.name.casefold()}" for phrase in (
         "интерактивный музей", "интерактивные экспонаты", "interactive museum",
     )):
@@ -245,7 +263,10 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings, *, open_at: dat
         "page_size": 10,
         # The Astana catalog returns meta.code=404 with en_RU and rejects en_KZ.
         # Search in the working Russian catalog, then label raw facts honestly.
-        "locale": {"ru": "ru_KZ", "kk": "kk_KZ", "en": "ru_KZ"}[request.language],
+        # kk_KZ can omit nearby attractions that ru_KZ returns. Keep retrieval
+        # independent of the requested answer language; localize the response
+        # afterwards and label Russian catalog attributes honestly.
+        "locale": "ru_KZ",
         "fields": FIELDS,
     }
     if intent in OBJECT_TYPES:

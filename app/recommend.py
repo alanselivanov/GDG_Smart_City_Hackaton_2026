@@ -117,9 +117,14 @@ FLIGHT_NOTICE = {
     "kk": "Ұшу жоспарына әуежай жанындағы жол нүктесіне бару және рейске дейінгі {buffer} минут қор қосылды. Бұл расталған терминал кіреберісі емес; жол уақыты болжамды. Әуе компаниясының талаптарын тексеріңіз.",
 }
 FLIGHT_EMPTY = {
-    "ru": "С учётом дороги в аэропорт и запаса до вылета подходящих мест не найдено. Не рассчитывайте на прогулку без проверки времени рейса.",
-    "en": "No place fits the airport transfer and preflight buffer. Do not plan an outing without checking the flight timing.",
-    "kk": "Әуежайға жол мен ұшу алдындағы уақыт қорын ескергенде қолайлы орын табылмады. Рейс уақытын тексермей серуен жоспарламаңыз.",
+    "ru": "С учётом дороги в аэропорт и запаса до рейса подходящих мест не найдено. Если время вылета или необходимый запас отличаются, укажите точное время рейса и проверьте требования авиакомпании.",
+    "en": "No safe option fits the airport transfer and preflight buffer. If the departure time or required buffer differs, enter the exact flight time and check your airline's rules.",
+    "kk": "Әуежайға жол мен ұшу алдындағы уақыт қорын ескергенде қауіпсіз нұсқа табылмады. Ұшу уақыты не қажетті қор өзгеше болса, рейстің нақты уақытын енгізіп, әуе компаниясының талаптарын тексеріңіз.",
+}
+FLIGHT_NO_TIME = {
+    "ru": "До вылета {minutes} мин. Запас до рейса — {buffer} мин, плюс нужна дорога в аэропорт. На безопасную прогулку времени нет. Если время рейса или требуемый запас отличаются, укажите точное время вылета и нужный запас.",
+    "en": "The flight departs in {minutes} minutes. The preflight buffer is {buffer} minutes, plus travel to the airport. There is no time for a safe outing. If the flight time or required buffer differs, enter the exact departure time and buffer.",
+    "kk": "Ұшуға {minutes} минут қалды. Рейске дейінгі қор — {buffer} минут, оған әуежайға жол қосылады. Қауіпсіз серуенге уақыт жоқ. Рейс уақыты не қажетті қор өзгеше болса, нақты уақыт пен қорды енгізіңіз.",
 }
 
 
@@ -664,6 +669,16 @@ def candidate_pois(pois: list[dict], request: RecommendRequest | GroupRecommendR
         score -= direct / 1700
         candidates.append((score, direct, poi))
     candidates.sort(key=lambda row: (-row[0], row[1], row[2]["id"]))
+    if not request.categories and any(term in lowered for term in STROLL_TERMS):
+        # Keep a few good candidates of each walkable kind before routing.
+        # Otherwise a dense park cluster can fill the whole routing shortlist.
+        reserved = []
+        per_kind = max(1, min(6, limit // 3))
+        for category in ("park", "landmark", "viewpoint"):
+            reserved.extend([row for row in candidates if row[2]["category"] == category][:per_kind])
+        selected = {row[2]["id"] for row in reserved}
+        reserved.extend(row for row in candidates if row[2]["id"] not in selected)
+        return [poi for _, _, poi in reserved[:limit]]
     return [poi for _, _, poi in candidates[:limit]]
 
 
@@ -677,6 +692,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
     desired, wants_socket, wants_quiet = _preferences(request.query)
     lowered = request.query.casefold()
     walking = any(term in lowered for term in WALK_TERMS)
+    stroll = any(term in lowered for term in STROLL_TERMS) and not request.categories
+    short_stroll = stroll and request.time_budget_minutes <= 60
     unusual = any(term in lowered for term in UNUSUAL_TERMS)
     night = night_intent(request.query, start)
     requirements = requested_requirements(request)
@@ -744,6 +761,10 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
             score += 30 if all(matches) else 10 if sum(matches) >= math.ceil(len(matches) / 2) else 0
             score += 12 * min(person_utility) + 6 * interest_score
         score += 2.5 - longest / 15
+        if short_stroll:
+            # A short outing should leave useful time at the place. The hard
+            # travel and visit limits above still decide feasibility.
+            score -= 5 * (longest / max_travel) ** 2
         if semantic_scores:
             score += 10 * semantic_scores.get(poi["id"], 0)
         score += attribute_score(poi, request.query)
@@ -880,7 +901,7 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                 continue
             adjusted = score
             if diversify:
-                category_penalty = 4.5 if unusual else 2.5
+                category_penalty = 7 if short_stroll else 6 if stroll else 4.5 if unusual else 2.5
                 adjusted -= category_penalty * sum(poi["category"] == prev["category"] for prev in chosen_pois)
                 if unusual and feature_kind(poi):
                     adjusted -= 3 * sum(feature_kind(poi) == feature_kind(prev) for prev in chosen_pois)
@@ -919,5 +940,13 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                 "kk": "Топ қатысушыларының кемінде көпшілігінің қызығушылығына сай орын табылмады.",
             }[language])
         else:
-            notices.append(FLIGHT_EMPTY[language] if near_flight else NOTICES[language]["empty"])
+            if near_flight:
+                minutes_until_flight = max(0, math.floor((request.flight_departure_at - start).total_seconds() / 60))
+                message = (FLIGHT_NO_TIME[language].format(minutes=minutes_until_flight,
+                                                            buffer=request.airport_arrival_buffer_minutes)
+                           if minutes_until_flight <= request.airport_arrival_buffer_minutes
+                           else FLIGHT_EMPTY[language])
+                notices.append(message)
+            else:
+                notices.append(NOTICES[language]["empty"])
     return chosen, notices, start

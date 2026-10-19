@@ -39,6 +39,10 @@ ISO timestamp. The frontend also recognizes explicit Russian "сегодня/з�
 the effective time budget, start time and origin. A named start in the query
 takes priority over device geolocation; the geolocation button remains visible
 so the device position can still be shown separately on the map.
+For flight requests, the advanced options also accept an exact departure time
+and a user-chosen airport arrival buffer (120 minutes by default). The backend
+still includes travel to the airport separately and can return no places when
+the outing would not fit safely. The user should check the airline's rules.
 
 The built-in map uses React Leaflet with OpenStreetMap tiles. It displays the
 resolved origin and numbered POI markers from the existing recommendation

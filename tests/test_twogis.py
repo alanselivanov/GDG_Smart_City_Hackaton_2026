@@ -11,6 +11,36 @@ from app.main import create_app
 
 
 class TwoGisNearbyTests(unittest.TestCase):
+    def test_kazakh_answer_uses_same_catalog_and_labels_russian_facts(self):
+        from app.models import TwoGisNearbyRequest
+        from app.twogis import as_candidate, nearby
+
+        def handler(request):
+            self.assertEqual(request.url.params["locale"], "ru_KZ")
+            return httpx.Response(200, json={"meta": {"code": 200}, "result": {
+                "total": 1, "items": [{"id": "123", "name": "Монумент",
+                    "point": {"lat": 51.09, "lon": 71.41},
+                    "rubrics": [{"name": "Памятник"}],
+                    "description": "Городской памятник"}],
+            }})
+
+        real_client = httpx.AsyncClient
+
+        def fake_client(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        config = replace(settings, twogis_api_key="test-key")
+        request = TwoGisNearbyRequest(query="памятник", lat=51.09, lon=71.41, language="kk")
+        with patch("app.twogis.httpx.AsyncClient", fake_client):
+            response = asyncio.run(nearby(request, config))
+        self.assertEqual(response.context_used["catalog_locale"], "ru_KZ")
+        self.assertEqual(len(response.recommendations), 1)
+        poi = response.recommendations[0]
+        self.assertEqual(poi.attributes_language, "ru")
+        candidate = as_candidate(poi, "landmark", "kk")
+        self.assertEqual(candidate["tags"]["description:ru"], "Городской памятник")
+        self.assertNotIn("description:kk", candidate["tags"])
+
     def test_one_page_ten_places_without_osm_data_or_extra_requests(self):
         requests = []
 

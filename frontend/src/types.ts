@@ -20,6 +20,8 @@ export interface RecommendRequest {
   limit: number
   max_travel_minutes?: number
   starts_at?: string
+  flight_departure_at?: string
+  airport_arrival_buffer_minutes?: number
   categories?: Category[]
   lat?: number
   lon?: number
@@ -63,6 +65,7 @@ export interface RecommendResponse {
     time_budget_minutes?: number
     starts_at?: string
     max_travel_minutes?: number
+    flight_plan?: { departure_at: string; airport_arrival_buffer_minutes: number }
     source_license_urls?: Record<string, string>
     fallback_used?: boolean
     fallback_reason?: string | null

@@ -125,6 +125,16 @@ select { appearance: none; padding-right: 31px; font-size: 14px; background-imag
 .card-details-body[hidden] { display: none; }
 .card-details-body p { margin: 0 0 9px; }
 .card-details-body strong { color: #2e4837; }
+.visit-estimate { margin: 15px 0 17px; padding: 15px; border: 1px solid #dce8d3; border-radius: 13px; background: linear-gradient(135deg, #f5f9ef 0%, #fbfcf8 100%); }
+.visit-estimate-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; color: #45694d; font-size: 13px; font-weight: 750; }
+.visit-estimate-total { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; white-space: nowrap; color: #65806b; font-size: 11px; font-weight: 650; }
+.visit-estimate-total strong { color: #1f5739; font-size: 21px; line-height: 1.1; letter-spacing: -.035em; }
+.visit-estimate-breakdown { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: 8px; margin-top: 14px; }
+.visit-estimate-part { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px; border: 1px solid #e4ebdd; border-radius: 9px; background: #fff; }
+.visit-estimate-part span { color: #697e6d; font-size: 11px; line-height: 1.25; }
+.visit-estimate-part strong { color: #254b36; font-size: 16px; line-height: 1.2; }
+.visit-estimate-plus { color: #7c9a79; font-size: 18px; font-weight: 500; }
+.card-details-body .visit-estimate-note { margin: 12px 0 0; color: #6b7d6e; font-size: 11px; line-height: 1.4; }
 .card-source-links { display: flex; flex-wrap: wrap; gap: 9px 16px; margin-top: 12px; }
 .card-source-links a, .result-details a { color: #2d7447; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
 .result-details { margin: 18px 0 0; padding: 14px 0 0; border-top: 1px solid #e3e9df; color: #65796a; font-size: 14px; line-height: 1.5; }

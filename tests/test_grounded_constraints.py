@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.models import GroupRecommendRequest, RecommendRequest, TwoGisPoi
@@ -56,6 +56,46 @@ def test_recommendation_list_uses_distinct_venue_names_when_available():
     assert len({rec.poi.name for rec in recommendations}) == 3
 
 
+def test_short_stroll_keeps_distinct_kinds_and_prefers_useful_travel_time():
+    parks = [poi(f"park-{i}", f"Park {i}", "park") for i in range(45)]
+    landmark = poi("monument", "City monument", "landmark", tags={"historic": "monument"})
+    viewpoint = poi("view", "River viewpoint", "viewpoint", tags={"tourism": "viewpoint"})
+    places = parks + [landmark, viewpoint]
+    request = RecommendRequest(lat=51.09, lon=71.40, query="Хочу погулять 60 минут пешком",
+                               time_budget_minutes=60, starts_at=DAY)
+    scores = {place["id"]: 0.8 if place["category"] == "park" else 0.3 for place in places}
+    candidates = candidate_pois(places, request, scores, limit=40)
+    assert {"landmark", "viewpoint"} <= {place["category"] for place in candidates}
+    paths = {place["id"]: [(500, 300 if place["category"] == "park" else 420)] for place in candidates}
+    recommendations, _, _ = rank(candidates, request, paths, scores)
+    assert len(recommendations) == 3
+    assert len({rec.poi.category for rec in recommendations}) >= 2
+
+
+def test_short_stroll_does_not_pick_distant_place_only_for_variety():
+    parks = [poi(f"park-{i}", f"Park {i}", "park") for i in range(3)]
+    landmark = poi("far", "Far monument", "landmark", tags={"historic": "monument"})
+    places = parks + [landmark]
+    request = RecommendRequest(lat=51.09, lon=71.40, query="Погулять 30 минут",
+                               time_budget_minutes=30, max_travel_minutes=10, starts_at=DAY)
+    paths = {place["id"]: [(400, 300)] for place in parks}
+    paths["far"] = [(1800, 900)]
+    recommendations, _, _ = rank(places, request, paths)
+    assert {rec.poi.category for rec in recommendations} == {"park"}
+
+
+def test_no_time_before_flight_explains_buffer_without_recommending_a_place():
+    place = poi("nearby", "Nearby park", "park")
+    request = RecommendRequest(lat=51.09, lon=71.40, query="Погулять перед вылетом",
+                               starts_at=DAY, flight_departure_at=DAY + timedelta(hours=2))
+    recommendations, notices, _ = rank([place], request, routes([place]),
+                                        airport_routes={place["id"]: (5000, 600)})
+    assert recommendations == []
+    assert "До вылета 120 мин" in notices[-1]
+    assert "запас до рейса — 120 мин" in notices[-1].casefold()
+    assert "точное время вылета" in notices[-1]
+
+
 def test_negative_socket_catalog_attribute_is_not_proof():
     place = poi("1", "Cafe", "cafe", attributes=[{
         "name": "Facilities", "attributes": [{"name": "No power outlets", "tag": "no_power_outlet"}],
@@ -79,6 +119,19 @@ def test_colloquial_mega_name_uses_catalog_coordinates_and_food_search():
     assert search_plan("ночью Хочу поесть сейчас где то возле меги силквей") == (
         "ресторан", 3000, "food"
     )
+
+
+def test_walkable_2gis_places_use_confirmed_names_or_rubrics():
+    assert search_plan("памятник") == ("памятник", 3000, "landmark")
+    assert search_plan("смотровая площадка") == ("смотровая площадка", 3000, "viewpoint")
+    monument = TwoGisPoi(id="monument", name="Монумент в парке", lat=51.1, lon=71.41,
+                          distance_m=0, rubrics=["Памятники и скульптуры"])
+    lookout = TwoGisPoi(id="lookout", name="Смотровая площадка", lat=51.1, lon=71.41,
+                         distance_m=0)
+    unknown = TwoGisPoi(id="unknown", name="Здание", lat=51.1, lon=71.41, distance_m=0)
+    assert as_candidate(monument, "landmark", "ru")["category"] == "landmark"
+    assert as_candidate(lookout, "viewpoint", "ru")["category"] == "viewpoint"
+    assert as_candidate(unknown, "landmark", "ru") == {}
 
 
 def test_plain_food_request_prefers_dining_venues_over_nightclubs():

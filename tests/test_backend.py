@@ -442,6 +442,10 @@ def test_flight_plan_requires_deadline_and_includes_road_and_buffer(tmp_path, mo
             "query": "Хочу кофе перед вылетом", "lat": 51.089, "lon": 71.4,
             "flight_departure_at": (datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(hours=4)).isoformat(),
         })
+        exact_overrides_relative = client.post("/v1/recommendations", json={
+            "query": "У меня 2 часа перед вылетом, хочу кофе", "lat": 51.089, "lon": 71.4,
+            "flight_departure_at": (datetime.now(ZoneInfo("Asia/Almaty")) + timedelta(hours=4)).isoformat(),
+        })
         two_times = client.post("/v1/recommendations", json={
             "query": "У меня 2 часа перед вылетом, хочу прогулку 30 минут",
             "lat": 51.089, "lon": 71.4,
@@ -463,6 +467,8 @@ def test_flight_plan_requires_deadline_and_includes_road_and_buffer(tmp_path, mo
     assert absolute.status_code == 200
     assert 238 <= absolute.json()["context_used"]["time_budget_minutes"] <= 240
     assert absolute.json()["context_used"]["flight_plan"]["departure_source"] == "flight_departure_at"
+    assert exact_overrides_relative.status_code == 200
+    assert 238 <= exact_overrides_relative.json()["context_used"]["time_budget_minutes"] <= 240
     assert two_times.status_code == 200
     assert two_times.json()["context_used"]["time_budget_minutes"] == 30
     departure = datetime.fromisoformat(two_times.json()["context_used"]["flight_plan"]["departure_at"])
@@ -471,6 +477,7 @@ def test_flight_plan_requires_deadline_and_includes_road_and_buffer(tmp_path, mo
     assert conservative.status_code == 200
     assert conservative.json()["context_used"]["flight_plan"]["airport_arrival_buffer_minutes"] == 120
     assert conservative.json()["recommendations"] == []
+    assert "Запас до рейса — 120 мин" in conservative.json()["notices"][-1]
     assert too_late.status_code == 200
     assert too_late.json()["recommendations"] == []
     assert "подходящих мест не найдено" in too_late.json()["notices"][-1]

@@ -19,7 +19,7 @@ from app.models import (Category, GroupRecommendRequest, Language, PoiOut, Prima
                         RecommendResponse, TwoGisNearbyRequest, TwoGisNearbyResponse)
 from app.recommend import (ASTANA_TZ, candidate_pois, display_name, distance_m, effective_max_travel, generic_name,
                            infer_budget, infer_flight_minutes, is_before_flight, localized_description,
-                           localized_facts, night_intent, NIGHT_TERMS, rank)
+                           localized_facts, night_intent, NIGHT_TERMS, STROLL_TERMS, rank)
 from app.routing import RoutingError, airport_transfers, pedestrian_matrix
 from app.twogis import TwoGisError, as_candidate, nearby as twogis_nearby
 from app.time_intent import infer_start
@@ -141,6 +141,10 @@ def create_app(config: Settings = settings) -> FastAPI:
         departure_was_explicit = "flight_departure_at" in request.model_fields_set
         inferred = infer_budget(request.query)
         flight_minutes = infer_flight_minutes(request.query)
+        # When an exact departure is supplied, a relative "two hours before my
+        # flight" phrase describes the deadline, not an outing duration.
+        if request.flight_departure_at is not None and inferred == flight_minutes:
+            inferred = None
         if "time_budget_minutes" not in request.model_fields_set:
             if inferred is not None:
                 if not 20 <= inferred <= 360:
@@ -223,6 +227,9 @@ def create_app(config: Settings = settings) -> FastAPI:
                     term in lowered for term in NIGHT_TERMS
                 ):
                     searches[0] = "ночью " + request.query
+                expanded_stroll = not request.categories and any(term in lowered for term in STROLL_TERMS)
+                if expanded_stroll:
+                    searches.extend(("памятник", "смотровая площадка"))
                 if any(term in lowered for term in ("площадк", "playground", "ойын алаң")) and any(
                     term in lowered for term in ("музе", "museum", "мұраж")
                 ):
@@ -243,6 +250,10 @@ def create_app(config: Settings = settings) -> FastAPI:
                         ), config, open_at=start)
                     except TwoGisError:
                         errors += 1
+                        if expanded_stroll and search == searches[0]:
+                            # Avoid two more slow provider calls after its main
+                            # walk search fails; the OSM cache remains available.
+                            break
                         continue
                     intent = result.context_used["intent"]
                     for card in result.recommendations:
@@ -251,7 +262,9 @@ def create_app(config: Settings = settings) -> FastAPI:
                             pois.append(candidate)
                             twogis_count += 1
                 if not twogis_count:
-                    twogis_reason = "2gis_unavailable" if errors == len(searches) else "2gis_empty"
+                    twogis_reason = "2gis_unavailable" if errors == len(searches) or (
+                        expanded_stroll and errors
+                    ) else "2gis_empty"
         if not pois:
             raise HTTPException(status_code=503, detail="POI data unavailable; run python -m app.ingest or wait for refresh")
         try:

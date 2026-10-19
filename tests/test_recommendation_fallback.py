@@ -141,7 +141,9 @@ class RecommendationPipelineTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["context_used"]["origin"]["name"], "Mega Silk Way")
         self.assertEqual(response.json()["context_used"]["time_budget_minutes"], 60)
-        self.assertEqual(points, [("парк", "71.407,51.089")])
+        self.assertEqual(points, [("парк", "71.407,51.089"),
+                                  ("памятник", "71.407,51.089"),
+                                  ("смотровая площадка", "71.407,51.089")])
         self.assertEqual(origins, [(51.089, 71.407)])
 
     def test_mixed_sources_share_retrieval_and_routing(self):
