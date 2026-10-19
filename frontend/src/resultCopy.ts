@@ -4,10 +4,13 @@ type Copy = {
   categories: Record<Category, string>
   placesHeading: string
   placeCount: (count: number) => string
+  groupCount: (count: number) => string
   deviceOrigin: string
   timeFromQuery: string
   walk: (minutes: number) => string
+  groupWalk: (minutes: number) => string
   fromStart: (distance: string) => string
+  groupFromStart: (distance: string) => string
   why: string
   action: string
   visitTitle: string
@@ -15,6 +18,17 @@ type Copy = {
   visitPlace: string
   visitTotal: string
   visitNote: string
+  placeData: string
+  requirements: string
+  confirmed: string
+  unconfirmed: string
+  facts: string
+  website: string
+  phone: string
+  groupWalks: string
+  groupMeet: string
+  airportTransfer: string
+  leaveAirportBy: string
   genericName: string
   missing: string
   open: string
@@ -52,17 +66,19 @@ type Copy = {
 export const resultCopy: Record<Language, Copy> = {
   ru: {
     categories: { cafe: 'Кафе', food: 'Еда', park: 'Парки', museum: 'Музеи', family: 'С детьми', landmark: 'Достопримечательности', culture: 'Культура', viewpoint: 'Смотровые', activity: 'Активности', nightlife: 'Ночная жизнь', shopping: 'Магазины' },
-    placesHeading: 'Подходящие места', placeCount: (n) => `${n} ${n === 1 ? 'место' : 'места'}`,
+    placesHeading: 'Подходящие места', placeCount: (n) => `${n} ${n % 100 >= 11 && n % 100 <= 14 ? 'мест' : n % 10 === 1 ? 'место' : n % 10 >= 2 && n % 10 <= 4 ? 'места' : 'мест'}`, groupCount: (n) => `${n} ${n === 5 ? 'участников' : 'участника'}`,
     deviceOrigin: 'Ваша геопозиция', timeFromQuery: 'Время из запроса',
-    walk: (n) => `${n} мин пешком`, fromStart: (distance) => `${distance} от старта`,
+    walk: (n) => `${n} мин пешком`, groupWalk: (n) => `до ${n} мин пешком`, fromStart: (distance) => `${distance} от старта`, groupFromStart: (distance) => `до ${distance} от старта`,
     why: 'Почему:', action: 'Что делать:',
     visitTitle: 'Оценка времени', visitWalk: 'Пешком до места', visitPlace: 'На месте', visitTotal: 'Всего',
-    visitNote: 'Время на месте — ориентир. Обратная дорога не включена.',
+    visitNote: 'Оценка для одного места; обратная дорога не учтена.',
+    placeData: 'Данные и ограничения', requirements: 'Ваши условия', confirmed: 'подтверждено', unconfirmed: 'не подтверждено', facts: 'Подтверждённые сведения', website: 'Сайт ↗', phone: 'Телефон:',
+    groupWalks: 'Путь участников', groupMeet: 'Встреча около', airportTransfer: 'До аэропорта', leaveAirportBy: 'Выехать не позже',
     genericName: 'Название места обобщено.', missing: 'Что не подтверждено:',
     open: 'По расписанию открыто', closed: 'По расписанию закрыто', unknown: 'Открытость неизвестна',
     showMap: 'На карте ↗', showDetails: 'Подробнее', hideDetails: 'Скрыть',
     openOsm: 'Открыть в OSM ↗', dataLink: (provider) => `Данные: ${provider} ↗`,
-    online: 'Сервис онлайн', loadingData: 'Данные загружаются', unavailable: 'Сервис недоступен', checking: 'Проверяем сервис',
+    online: 'Каталог мест доступен', loadingData: 'Данные загружаются', unavailable: 'Сервис недоступен', checking: 'Проверяем сервис',
     requestFailed: 'Не получилось найти места', searching: 'Подбираем варианты и проверяем время пути…',
     selectionDetails: 'Как мы подобрали места и что проверить?', selectedFor: (budget) => `Учтено: ${budget} на прогулку`,
     travelLimit: (n) => `до ${n} мин пешком`, startAt: (date) => `начало ${date}`,
@@ -78,17 +94,19 @@ export const resultCopy: Record<Language, Copy> = {
   },
   kk: {
     categories: { cafe: 'Кафе', food: 'Тамақтану', park: 'Саябақтар', museum: 'Мұражайлар', family: 'Балалармен', landmark: 'Көрікті орындар', culture: 'Мәдениет', viewpoint: 'Көру алаңдары', activity: 'Белсенді демалыс', nightlife: 'Түнгі демалыс', shopping: 'Дүкендер' },
-    placesHeading: 'Сәйкес орындар', placeCount: (n) => `${n} орын`,
+    placesHeading: 'Сәйкес орындар', placeCount: (n) => `${n} орын`, groupCount: (n) => `${n} қатысушы`,
     deviceOrigin: 'Сіздің геолокацияңыз', timeFromQuery: 'Сұраудағы уақыт',
-    walk: (n) => `${n} мин жаяу`, fromStart: (distance) => `бастау нүктесінен ${distance}`,
+    walk: (n) => `${n} мин жаяу`, groupWalk: (n) => `${n} мин дейін жаяу`, fromStart: (distance) => `бастау нүктесінен ${distance}`, groupFromStart: (distance) => `бастау нүктесінен ${distance} дейін`,
     why: 'Неге:', action: 'Не істеуге болады:',
     visitTitle: 'Уақыт шамасы', visitWalk: 'Орынға дейін жаяу', visitPlace: 'Орынның өзінде', visitTotal: 'Барлығы',
-    visitNote: 'Орынға бөлінген уақыт — болжам. Қайтар жол есепке алынбаған.',
+    visitNote: 'Бұл бір орынға арналған болжам; қайтар жол есепке алынбаған.',
+    placeData: 'Деректер мен шектеулер', requirements: 'Сіздің шарттарыңыз', confirmed: 'расталған', unconfirmed: 'расталмаған', facts: 'Расталған мәліметтер', website: 'Сайт ↗', phone: 'Телефон:',
+    groupWalks: 'Қатысушылардың жолы', groupMeet: 'Кездесу уақыты', airportTransfer: 'Әуежайға дейін', leaveAirportBy: 'Кешікпей шығу',
     genericName: 'Орын атауы жалпыланған.', missing: 'Расталмаған ақпарат:',
     open: 'Кесте бойынша ашық', closed: 'Кесте бойынша жабық', unknown: 'Ашық екені белгісіз',
     showMap: 'Картадан көру ↗', showDetails: 'Толығырақ', hideDetails: 'Жасыру',
     openOsm: 'OSM-де ашу ↗', dataLink: (provider) => `Дереккөз: ${provider} ↗`,
-    online: 'Қызмет жұмыс істеп тұр', loadingData: 'Деректер жүктелуде', unavailable: 'Қызмет қолжетімсіз', checking: 'Қызмет тексерілуде',
+    online: 'Орындар каталогы қолжетімді', loadingData: 'Деректер жүктелуде', unavailable: 'Қызмет қолжетімсіз', checking: 'Қызмет тексерілуде',
     requestFailed: 'Орындарды табу мүмкін болмады', searching: 'Орындар мен жаяу жол уақыты тексерілуде…',
     selectionDetails: 'Орындар қалай таңдалды және нені тексеру керек?', selectedFor: (budget) => `Ескерілгені: серуенге ${budget}`,
     travelLimit: (n) => `жаяу жүруге ${n} мин дейін`, startAt: (date) => `басталуы ${date}`,
@@ -104,17 +122,19 @@ export const resultCopy: Record<Language, Copy> = {
   },
   en: {
     categories: { cafe: 'Cafes', food: 'Food', park: 'Parks', museum: 'Museums', family: 'With children', landmark: 'Landmarks', culture: 'Culture', viewpoint: 'Viewpoints', activity: 'Activities', nightlife: 'Nightlife', shopping: 'Shopping' },
-    placesHeading: 'Recommended places', placeCount: (n) => `${n} ${n === 1 ? 'place' : 'places'}`,
+    placesHeading: 'Recommended places', placeCount: (n) => `${n} ${n === 1 ? 'place' : 'places'}`, groupCount: (n) => `${n} people`,
     deviceOrigin: 'Your location', timeFromQuery: 'Time from your request',
-    walk: (n) => `${n} min walk`, fromStart: (distance) => `${distance} from start`,
+    walk: (n) => `${n} min walk`, groupWalk: (n) => `up to ${n} min walk`, fromStart: (distance) => `${distance} from start`, groupFromStart: (distance) => `up to ${distance} from start`,
     why: 'Why:', action: 'What to do:',
     visitTitle: 'Time estimate', visitWalk: 'Walk to place', visitPlace: 'At the place', visitTotal: 'Total',
-    visitNote: 'Time at the place is an estimate. The return trip is not included.',
+    visitNote: 'Estimate for one place; the return trip is not included.',
+    placeData: 'Data and limitations', requirements: 'Your requirements', confirmed: 'confirmed', unconfirmed: 'unconfirmed', facts: 'Verified facts', website: 'Website ↗', phone: 'Phone:',
+    groupWalks: 'Walk for each person', groupMeet: 'Meet around', airportTransfer: 'To the airport', leaveAirportBy: 'Leave by',
     genericName: 'The place name is generic.', missing: 'Not confirmed:',
     open: 'Open according to listed hours', closed: 'Closed according to listed hours', unknown: 'Opening status unknown',
     showMap: 'On map ↗', showDetails: 'Details', hideDetails: 'Hide',
     openOsm: 'Open in OSM ↗', dataLink: (provider) => `Source: ${provider} ↗`,
-    online: 'Service online', loadingData: 'Loading place data', unavailable: 'Service unavailable', checking: 'Checking service',
+    online: 'Place catalog available', loadingData: 'Loading place data', unavailable: 'Service unavailable', checking: 'Checking service',
     requestFailed: 'Could not find places', searching: 'Finding places and checking walking times…',
     selectionDetails: 'How were these places chosen?', selectedFor: (budget) => `Considered: ${budget} for the outing`,
     travelLimit: (n) => `up to ${n} min on foot`, startAt: (date) => `starts ${date}`,
@@ -144,7 +164,12 @@ export function formatDistance(meters: number, language: Language): string {
 }
 
 export function formatStart(iso: string, language: Language): string {
-  return new Date(iso).toLocaleString({ ru: 'ru-RU', kk: 'kk-KZ', en: 'en-US' }[language], {
+  const date = new Date(iso)
+  if (language === 'kk') {
+    const months = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз', 'қыркүйек', 'қазан', 'қараша', 'желтоқсан']
+    return `${date.getDate()} ${months[date.getMonth()]}, ${date.toLocaleTimeString('kk-KZ', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+  }
+  return date.toLocaleString({ ru: 'ru-RU', en: 'en-US' }[language], {
     day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
   })
 }

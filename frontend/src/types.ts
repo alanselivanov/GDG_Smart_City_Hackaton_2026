@@ -13,6 +13,14 @@ export type Category =
   | 'activity'
   | 'shopping'
 
+export type Requirement = 'sockets' | 'quiet' | 'interactive'
+
+export interface GroupParticipant {
+  lat: number
+  lon: number
+  interests: Category[]
+}
+
 export interface RecommendRequest {
   query: string
   language: Language
@@ -23,9 +31,30 @@ export interface RecommendRequest {
   flight_departure_at?: string
   airport_arrival_buffer_minutes?: number
   categories?: Category[]
+  exclude_categories?: Category[]
+  interests?: Category[]
+  must_have?: Requirement[]
+  airport_transfer_mode?: 'auto' | 'pedestrian'
   lat?: number
   lon?: number
   reference_place?: string
+}
+
+export type GroupRecommendRequest = Omit<RecommendRequest, 'lat' | 'lon' | 'reference_place' | 'interests'> & {
+  participants: GroupParticipant[]
+}
+
+export interface PoiFact {
+  key: string
+  kind: string
+  text: string
+  source_url: string
+  verified_at: string
+}
+
+export interface TwoGisAttributeGroup {
+  name: string
+  attributes: { name: string; tag?: string | null }[]
 }
 
 export interface Poi {
@@ -41,20 +70,33 @@ export interface Poi {
   source_url: string
   fetched_at: string
   name_is_generic: boolean
+  distance_m?: number | null
   rating?: number | null
   review_count?: number | null
+  attribute_groups?: TwoGisAttributeGroup[]
+  facts?: PoiFact[]
 }
 
 export interface Recommendation {
   poi: Poi
   distance_m: number
   walking_minutes: number
+  walking_seconds?: number
   visit_minutes: number
   open_status: 'open' | 'closed' | 'unknown'
   open_status_reason: string
   why: string
   what_to_do: string
   missing_information: string[]
+  evidence?: PoiFact[]
+  requirement_status?: Partial<Record<Requirement, 'confirmed' | 'unknown'>>
+  airport_transfer_minutes?: number | null
+  airport_transfer_distance_m?: number | null
+  latest_leave_for_airport_at?: string | null
+  group_meeting_at?: string | null
+  group_ends_at?: string | null
+  participant_walking_minutes?: number[] | null
+  participant_interest_matches?: boolean[] | null
 }
 
 export interface RecommendResponse {
@@ -76,6 +118,8 @@ export interface RecommendResponse {
     selection_candidate_count?: number
     selection_priorities?: string[]
     selection_scores?: Record<string, number>
+    providers?: string[]
+    participant_count?: number
   }
   source: string
   source_license_url: string

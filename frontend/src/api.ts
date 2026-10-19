@@ -1,4 +1,4 @@
-import type { HealthResponse, RecommendRequest, RecommendResponse } from './types'
+import type { GroupRecommendRequest, HealthResponse, RecommendRequest, RecommendResponse } from './types'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 
@@ -51,6 +51,15 @@ export function getHealth(signal?: AbortSignal) {
 
 export function getRecommendations(payload: RecommendRequest, signal?: AbortSignal) {
   return request<RecommendResponse>('/v1/recommendations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+}
+
+export function getGroupRecommendations(payload: GroupRecommendRequest, signal?: AbortSignal) {
+  return request<RecommendResponse>('/v1/group/recommendations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
