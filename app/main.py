@@ -6,7 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.ai_selection import score_candidates
@@ -18,11 +18,12 @@ from app.geocoding import LocationError, resolve_origin
 from app.ingest import IngestError, refresh, refresh_airport_reference
 from app.models import (Category, GroupRecommendRequest, Language, PoiOut, PrimaryRecommendRequest, RecommendRequest,
                         RecommendResponse, TwoGisNearbyRequest, TwoGisNearbyResponse)
+from app.rate_limit import ApiLimiter
 from app.recommend import (ASTANA_TZ, candidate_pois, display_name, distance_m, effective_max_travel, generic_name,
                            infer_budget, infer_flight_minutes, is_before_flight, localized_description,
                            localized_facts, night_intent, NIGHT_TERMS, STROLL_TERMS, rank,
                            selection_notices)
-from app.routing import RoutingError, airport_transfers, pedestrian_matrix
+from app.routing import RoutingError, airport_transfers, estimated_pedestrian_matrix, pedestrian_matrix
 from app.search_tags import SearchTags, explicit_cuisines, plan_search, search_queries
 from app.twogis import TwoGisError, as_candidate, nearby as twogis_nearby
 from app.time_intent import infer_start
@@ -32,6 +33,8 @@ def create_app(config: Settings = settings) -> FastAPI:
     db = Database(config.database_path)
     refresh_lock = asyncio.Lock()
     embedding_lock = asyncio.Lock()
+    external_api_limit = ApiLimiter(config.api_requests_per_minute, config.api_requests_per_day)
+    recommendation_slots = asyncio.Semaphore(max(1, config.max_concurrent_recommendations))
     state: dict[str, str | None] = {"last_refresh_error": None, "last_airport_refresh_error": None}
 
     async def do_refresh() -> int:
@@ -95,7 +98,13 @@ def create_app(config: Settings = settings) -> FastAPI:
     @app.get("/health")
     def health():
         status = db.status()
+        last = status["last_success_at"]
+        age_hours = (round((datetime.now(ASTANA_TZ) - datetime.fromisoformat(last).astimezone(ASTANA_TZ))
+                           .total_seconds() / 3600, 1) if last else None)
         return {"status": "ready" if status["poi_count"] else "awaiting_poi", **status,
+                "poi_age_hours": age_hours,
+                "poi_stale": age_hours is None or age_hours > config.max_poi_age_hours,
+                "external_api_budget": external_api_limit.status(),
                 "last_refresh_error": state["last_refresh_error"],
                 "airport_reference": db.route_reference("airport"),
                 "last_airport_refresh_error": state["last_airport_refresh_error"]}
@@ -120,8 +129,9 @@ def create_app(config: Settings = settings) -> FastAPI:
                 for d, poi in found[:limit]]
 
     @app.get("/v1/pois/search", response_model=list[PoiOut])
-    async def search_pois(q: str = Query(min_length=2, max_length=100), language: Language = "ru",
+    async def search_pois(http_request: Request, q: str = Query(min_length=2, max_length=100), language: Language = "ru",
                     limit: int = Query(default=10, ge=1, le=30)):
+        await external_api_limit.charge(http_request.client.host if http_request.client else "unknown")
         needle = q.casefold().strip()
         pois = db.all_pois()
         if not pois:
@@ -140,6 +150,10 @@ def create_app(config: Settings = settings) -> FastAPI:
 
     async def recommend(request: RecommendRequest | GroupRecommendRequest,
                         include_twogis: bool = False) -> RecommendResponse:
+        if (not request.query and not request.categories and not request.must_have and
+                not (isinstance(request, GroupRecommendRequest) and
+                     any(person.interests for person in request.participants))):
+            raise HTTPException(status_code=422, detail="Provide a query or explicit place preferences")
         budget_was_explicit = "time_budget_minutes" in request.model_fields_set
         departure_was_explicit = "flight_departure_at" in request.model_fields_set
         inferred = infer_budget(request.query)
@@ -289,6 +303,7 @@ def create_app(config: Settings = settings) -> FastAPI:
         airport_reference = db.route_reference("airport") if flight_requested else None
         if flight_requested and not airport_reference:
             raise HTTPException(status_code=503, detail="Airport route reference unavailable; wait for OSM refresh")
+        routing_fallback = False
         try:
             walking_task = pedestrian_matrix([(person.lat, person.lon) for person in participants], candidates, config)
             if flight_requested:
@@ -301,10 +316,16 @@ def create_app(config: Settings = settings) -> FastAPI:
                 routes = await walking_task
                 transfer_routes = None
         except RoutingError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if flight_requested:
+                # A straight-line estimate is unsafe for a flight deadline.
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            routes = estimated_pedestrian_matrix(
+                [(person.lat, person.lon) for person in participants], candidates)
+            transfer_routes = None
+            routing_fallback = True
         ai_enabled = bool(config.llm_api_key and request.query)
         pool, notices, start = rank(candidates, request, routes, scores, transfer_routes,
-                                    selection_limit=18 if ai_enabled else None)
+                                    selection_limit=12 if ai_enabled else None)
         selection = (await score_candidates(pool, request, start, config)
                      if ai_enabled and len(pool) > 1 else None)
         recommendations = selection.recommendations if selection else pool[:request.limit]
@@ -316,13 +337,41 @@ def create_app(config: Settings = settings) -> FastAPI:
                 "en": "Semantic search is temporarily unavailable. Places were selected using available categories, attributes, and distance.",
                 "kk": "Мағыналық іздеу уақытша қолжетімсіз. Орындар қолда бар санаттар, атрибуттар және қашықтық бойынша таңдалды.",
             }[request.language])
+        if routing_fallback:
+            notices.append({
+                "ru": "Маршрутизатор временно недоступен. Время и расстояние пешком приблизительные; проверьте маршрут на карте.",
+                "en": "The route service is unavailable. Walking time and distance are estimates; check the route on a map.",
+                "kk": "Маршрут қызметі уақытша қолжетімсіз. Жаяу жүру уақыты мен қашықтығы шамамен берілген; маршрутты картадан тексеріңіз.",
+            }[request.language])
+        catalog_last = db.status()["last_success_at"]
+        catalog_age_hours = ((datetime.now(ASTANA_TZ) - datetime.fromisoformat(catalog_last).astimezone(ASTANA_TZ))
+                             .total_seconds() / 3600 if catalog_last else None)
+        catalog_stale = catalog_age_hours is None or catalog_age_hours > config.max_poi_age_hours
+        if catalog_stale and any(not rec.poi.id.startswith("2gis/") for rec in recommendations):
+            notices.append({
+                "ru": "Каталог OSM не обновлялся более суток; часы и сведения о месте проверьте перед визитом.",
+                "en": "The OSM catalog has not refreshed in over a day; check hours and place details before visiting.",
+                "kk": "OSM каталогы бір тәуліктен аса жаңартылмады; барар алдында жұмыс уақытын және орын деректерін тексеріңіз.",
+            }[request.language])
         if not recommendations and explicit_cuisines(request.query):
             notices.append({
                 "ru": "Место с подтверждённой запрошенной кухней, подходящее по времени и расстоянию, не найдено.",
                 "en": "No place with the requested cuisine confirmed fits the time and distance limits.",
                 "kk": "Сұралған асханасы расталған және уақыт пен қашықтыққа сай орын табылмады.",
             }[request.language])
-        await enhance(recommendations, request.language, config, request.query, start)
+        await enhance(recommendations, request.language, config, request.query, start,
+                      request.time_budget_minutes)
+        if group and any(person.interests for person in request.participants):
+            for rec in recommendations:
+                matches = rec.participant_interest_matches or []
+                if matches and not all(matches) and not any(
+                    term in rec.why.casefold() for term in ("интересам", "interests", "қызығушылы")
+                ):
+                    rec.why += {
+                        "ru": f" Место совпадает с интересами {sum(matches)} из {len(matches)} участников; для остальных это компромисс.",
+                        "en": f" It matches {sum(matches)} of {len(matches)} participants' interests; it is a compromise for the others.",
+                        "kk": f" Бұл орын {len(matches)} қатысушының {sum(matches)} қызығушылығына сай; басқалары үшін бұл ымыралы нұсқа.",
+                    }[request.language]
         generated_count = sum(rec.text_source == "llm_verified" for rec in recommendations)
         context = {
             "query": request.query,
@@ -342,8 +391,13 @@ def create_app(config: Settings = settings) -> FastAPI:
                                  else "geospatial_and_filters"),
             "embedding_model": config.embedding_model if request.query and not embedding_fallback else None,
             "embedding_fallback_used": embedding_fallback,
-            "distance_method": "valhalla_osm_pedestrian_matrix",
-            "routing_provider": config.routing_url,
+            "poi_catalog_age_hours": round(catalog_age_hours, 1) if catalog_age_hours is not None else None,
+            "poi_catalog_stale": catalog_stale,
+            "routing_method": "geodesic_estimate" if routing_fallback else "osm_road_network",
+            "routing_fallback_used": routing_fallback,
+            "distance_method": ("geodesic_estimate_with_detour_factor" if routing_fallback
+                                else "valhalla_osm_pedestrian_matrix"),
+            "routing_provider": None if routing_fallback else config.routing_url,
             "llm_text_policy": "generated_from_catalog_facts_then_verified",
             "llm_generated_count": generated_count,
             "selection_method": ("ai_scored" if selection else
@@ -398,21 +452,35 @@ def create_app(config: Settings = settings) -> FastAPI:
                                                  "llm_verified" if generated_count else "grounded_templates"),
                                  notices=notices)
 
+    async def limited_recommend(request: RecommendRequest | GroupRecommendRequest,
+                                http_request: Request, include_twogis: bool) -> RecommendResponse:
+        await external_api_limit.charge(http_request.client.host if http_request.client else "unknown")
+        try:
+            await asyncio.wait_for(recommendation_slots.acquire(), timeout=5)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(429, "Recommendation service is busy; retry shortly",
+                                headers={"Retry-After": "5"}) from exc
+        try:
+            return await recommend(request, include_twogis)
+        finally:
+            recommendation_slots.release()
+
     @app.post("/v1/recommendations", response_model=RecommendResponse)
-    async def individual_recommendations(request: PrimaryRecommendRequest):
-        return await recommend(request, include_twogis=True)
+    async def individual_recommendations(request: PrimaryRecommendRequest, http_request: Request):
+        return await limited_recommend(request, http_request, include_twogis=True)
 
     @app.post("/v1/osm/recommendations", response_model=RecommendResponse)
-    async def osm_recommendations(request: RecommendRequest):
+    async def osm_recommendations(request: RecommendRequest, http_request: Request):
         """Explicit OSM-only planner for source comparisons and route planning."""
-        return await recommend(request)
+        return await limited_recommend(request, http_request, include_twogis=False)
 
     @app.post("/v1/group/recommendations", response_model=RecommendResponse)
-    async def group_recommendations(request: GroupRecommendRequest):
-        return await recommend(request, include_twogis=True)
+    async def group_recommendations(request: GroupRecommendRequest, http_request: Request):
+        return await limited_recommend(request, http_request, include_twogis=True)
 
     @app.post("/v1/2gis/recommendations", response_model=TwoGisNearbyResponse)
-    async def twogis_recommendations(request: TwoGisNearbyRequest):
+    async def twogis_recommendations(request: TwoGisNearbyRequest, http_request: Request):
+        await external_api_limit.charge(http_request.client.host if http_request.client else "unknown")
         try:
             return await twogis_nearby(request, config)
         except TwoGisError as exc:

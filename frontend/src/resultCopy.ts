@@ -13,6 +13,11 @@ type Copy = {
   groupFromStart: (distance: string) => string
   why: string
   action: string
+  textSource: Record<'grounded_fallback' | 'llm_verified', string>
+  interestMatched: string
+  interestNotMatched: string
+  staleCatalog: string
+  approximateRoute: string
   visitTitle: string
   visitWalk: string
   visitPlace: string
@@ -69,7 +74,10 @@ export const resultCopy: Record<Language, Copy> = {
     placesHeading: 'Подходящие места', placeCount: (n) => `${n} ${n % 100 >= 11 && n % 100 <= 14 ? 'мест' : n % 10 === 1 ? 'место' : n % 10 >= 2 && n % 10 <= 4 ? 'места' : 'мест'}`, groupCount: (n) => `${n} ${n === 5 ? 'участников' : 'участника'}`,
     deviceOrigin: 'Ваша геопозиция', timeFromQuery: 'Время из запроса',
     walk: (n) => `${n} мин пешком`, groupWalk: (n) => `до ${n} мин пешком`, fromStart: (distance) => `${distance} от старта`, groupFromStart: (distance) => `до ${distance} от старта`,
-    why: 'Почему:', action: 'Что делать:',
+    why: 'Почему подходит:', action: 'Что делать:',
+    textSource: { grounded_fallback: 'Текст составлен по данным места.', llm_verified: 'Текст сформулирован ИИ и проверен по данным места.' },
+    interestMatched: 'интерес совпадает', interestNotMatched: 'интерес не совпадает',
+    staleCatalog: 'Данные OSM могут быть устаревшими', approximateRoute: 'Путь рассчитан приблизительно',
     visitTitle: 'Оценка времени', visitWalk: 'Пешком до места', visitPlace: 'На месте', visitTotal: 'Всего',
     visitNote: 'Оценка для одного места; обратная дорога не учтена.',
     placeData: 'Данные и ограничения', requirements: 'Ваши условия', confirmed: 'подтверждено', unconfirmed: 'не подтверждено', facts: 'Подтверждённые сведения', website: 'Сайт ↗', phone: 'Телефон:',
@@ -82,7 +90,7 @@ export const resultCopy: Record<Language, Copy> = {
     requestFailed: 'Не получилось найти места', searching: 'Подбираем варианты и проверяем время пути…',
     selectionDetails: 'Как мы подобрали места и что проверить?', selectedFor: (budget) => `Учтено: ${budget} на прогулку`,
     travelLimit: (n) => `до ${n} мин пешком`, startAt: (date) => `начало ${date}`,
-    sources: 'Данные:', fallback: '2GIS сейчас недоступен, использованы данные OSM.',
+    sources: 'Данные:', fallback: 'Подходящих мест из 2GIS не получено; использованы данные OSM.',
     searchPlan: { ai_tags: 'ИИ выделил признаки запроса.', rules_fallback: 'Признаки запроса определены правилами.' },
     searchQueries: 'Поиск в 2GIS:',
     selectionMode: { ai_scored: 'Места оценил и выбрал ИИ из проверенных кандидатов.', rules_fallback: 'Места выбраны по правилам: оценка ИИ недоступна или не прошла проверку.', single_candidate: 'Найден один подходящий кандидат.', no_candidates: 'Подходящих кандидатов не найдено.' },
@@ -97,7 +105,10 @@ export const resultCopy: Record<Language, Copy> = {
     placesHeading: 'Сәйкес орындар', placeCount: (n) => `${n} орын`, groupCount: (n) => `${n} қатысушы`,
     deviceOrigin: 'Сіздің геолокацияңыз', timeFromQuery: 'Сұраудағы уақыт',
     walk: (n) => `${n} мин жаяу`, groupWalk: (n) => `${n} мин дейін жаяу`, fromStart: (distance) => `бастау нүктесінен ${distance}`, groupFromStart: (distance) => `бастау нүктесінен ${distance} дейін`,
-    why: 'Неге:', action: 'Не істеуге болады:',
+    why: 'Неге сәйкес келеді:', action: 'Не істеуге болады:',
+    textSource: { grounded_fallback: 'Мәтін орын деректерінен құрастырылған.', llm_verified: 'Мәтін ЖИ көмегімен жазылып, орын деректері бойынша тексерілген.' },
+    interestMatched: 'қызығушылық сәйкес', interestNotMatched: 'қызығушылық сәйкес емес',
+    staleCatalog: 'OSM деректері ескірген болуы мүмкін', approximateRoute: 'Жол шамамен есептелген',
     visitTitle: 'Уақыт шамасы', visitWalk: 'Орынға дейін жаяу', visitPlace: 'Орынның өзінде', visitTotal: 'Барлығы',
     visitNote: 'Бұл бір орынға арналған болжам; қайтар жол есепке алынбаған.',
     placeData: 'Деректер мен шектеулер', requirements: 'Сіздің шарттарыңыз', confirmed: 'расталған', unconfirmed: 'расталмаған', facts: 'Расталған мәліметтер', website: 'Сайт ↗', phone: 'Телефон:',
@@ -110,7 +121,7 @@ export const resultCopy: Record<Language, Copy> = {
     requestFailed: 'Орындарды табу мүмкін болмады', searching: 'Орындар мен жаяу жол уақыты тексерілуде…',
     selectionDetails: 'Орындар қалай таңдалды және нені тексеру керек?', selectedFor: (budget) => `Ескерілгені: серуенге ${budget}`,
     travelLimit: (n) => `жаяу жүруге ${n} мин дейін`, startAt: (date) => `басталуы ${date}`,
-    sources: 'Деректер:', fallback: '2GIS қолжетімсіз, OSM деректері қолданылды.',
+    sources: 'Деректер:', fallback: '2GIS-тен сәйкес орындар алынбады; OSM деректері қолданылды.',
     searchPlan: { ai_tags: 'ЖИ сұраудың белгілерін анықтады.', rules_fallback: 'Сұраудың белгілері ережелер бойынша анықталды.' },
     searchQueries: '2GIS ішіндегі іздеу:',
     selectionMode: { ai_scored: 'ЖИ орындарды тексерілген үміткерлер арасынан бағалап таңдады.', rules_fallback: 'Орындар ережелер бойынша таңдалды: ЖИ бағалауы қолжетімсіз не тексеруден өтпеді.', single_candidate: 'Бір ғана сәйкес орын табылды.', no_candidates: 'Сәйкес орын табылмады.' },
@@ -125,7 +136,10 @@ export const resultCopy: Record<Language, Copy> = {
     placesHeading: 'Recommended places', placeCount: (n) => `${n} ${n === 1 ? 'place' : 'places'}`, groupCount: (n) => `${n} people`,
     deviceOrigin: 'Your location', timeFromQuery: 'Time from your request',
     walk: (n) => `${n} min walk`, groupWalk: (n) => `up to ${n} min walk`, fromStart: (distance) => `${distance} from start`, groupFromStart: (distance) => `up to ${distance} from start`,
-    why: 'Why:', action: 'What to do:',
+    why: 'Why it fits:', action: 'What to do:',
+    textSource: { grounded_fallback: 'Text composed from place data.', llm_verified: 'Text written by AI and checked against place data.' },
+    interestMatched: 'interest matches', interestNotMatched: 'interest differs',
+    staleCatalog: 'OSM data may be outdated', approximateRoute: 'Walking route is estimated',
     visitTitle: 'Time estimate', visitWalk: 'Walk to place', visitPlace: 'At the place', visitTotal: 'Total',
     visitNote: 'Estimate for one place; the return trip is not included.',
     placeData: 'Data and limitations', requirements: 'Your requirements', confirmed: 'confirmed', unconfirmed: 'unconfirmed', facts: 'Verified facts', website: 'Website ↗', phone: 'Phone:',
@@ -138,7 +152,7 @@ export const resultCopy: Record<Language, Copy> = {
     requestFailed: 'Could not find places', searching: 'Finding places and checking walking times…',
     selectionDetails: 'How were these places chosen?', selectedFor: (budget) => `Considered: ${budget} for the outing`,
     travelLimit: (n) => `up to ${n} min on foot`, startAt: (date) => `starts ${date}`,
-    sources: 'Sources:', fallback: '2GIS is unavailable; OSM data was used.',
+    sources: 'Sources:', fallback: 'No suitable 2GIS places were retrieved; OSM data was used.',
     searchPlan: { ai_tags: 'AI extracted the request tags.', rules_fallback: 'Request tags were determined by rules.' },
     searchQueries: '2GIS search:',
     selectionMode: { ai_scored: 'AI scored and chose these places from verified candidates.', rules_fallback: 'Places were selected by rules because AI scoring was unavailable or invalid.', single_candidate: 'Only one eligible place was found.', no_candidates: 'No eligible places were found.' },

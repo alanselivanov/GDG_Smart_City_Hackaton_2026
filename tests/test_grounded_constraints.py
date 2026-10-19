@@ -74,6 +74,8 @@ def test_short_stroll_keeps_distinct_kinds_and_prefers_useful_travel_time():
     parks = [poi(f"park-{i}", f"Park {i}", "park") for i in range(45)]
     landmark = poi("monument", "City monument", "landmark", tags={"historic": "monument"})
     viewpoint = poi("view", "River viewpoint", "viewpoint", tags={"tourism": "viewpoint"})
+    landmark["description"] = "A sourced relief on the monument"
+    viewpoint["description"] = "A sourced river panorama"
     places = parks + [landmark, viewpoint]
     request = RecommendRequest(lat=51.09, lon=71.40, query="Хочу погулять 60 минут пешком",
                                time_budget_minutes=60, starts_at=DAY)
@@ -84,6 +86,16 @@ def test_short_stroll_keeps_distinct_kinds_and_prefers_useful_travel_time():
     recommendations, _, _ = rank(candidates, request, paths, scores)
     assert len(recommendations) == 3
     assert len({rec.poi.category for rec in recommendations}) >= 2
+
+
+def test_walk_excludes_unsourced_landmark_when_parks_are_available():
+    park = poi("park", "Real park", "park")
+    decoration = poi("decoration", "Инсталляция Солнце", "landmark")
+    request = RecommendRequest(lat=51.09, lon=71.40, query="Хочу погулять час пешком",
+                               time_budget_minutes=60, starts_at=DAY)
+    result = candidate_pois([park, decoration], request,
+                            {"park": 0.2, "decoration": 0.9})
+    assert [item["id"] for item in result] == ["park"]
 
 
 def test_short_stroll_does_not_pick_distant_place_only_for_variety():
@@ -218,8 +230,25 @@ def test_group_prioritizes_shared_interest_and_rejects_one_person_option():
     disjoint = GroupRecommendRequest(participants=[
         {"lat": 51.1, "lon": 71.41, "interests": [interest]}
         for interest in ("museum", "park", "food")], starts_at=DAY)
-    recommendations, _, _ = rank(places, disjoint, paths)
-    assert recommendations == []
+    recommendations, notices, _ = rank(places, disjoint, paths)
+    assert recommendations
+    assert all(sum(rec.participant_interest_matches) < 2 for rec in recommendations)
+    assert any("компромисс" in note for note in notices)
+
+
+def test_group_shortlist_preserves_each_interested_category():
+    cafes = [poi(f"cafe-{index}", f"Cafe {index}", "cafe") for index in range(40)]
+    park = poi("park", "Park", "park")
+    museum = poi("museum", "Museum", "museum")
+    request = GroupRecommendRequest(query="Где встретиться?", starts_at=DAY, participants=[
+        {"lat": 51.09, "lon": 71.40, "interests": ["cafe"]},
+        {"lat": 51.09, "lon": 71.40, "interests": ["park"]},
+        {"lat": 51.09, "lon": 71.40, "interests": ["museum"]},
+    ])
+    scores = {place["id"]: 0.9 if place["category"] == "cafe" else 0.1
+              for place in [*cafes, park, museum]}
+    shortlist = candidate_pois([*cafes, park, museum], request, scores, limit=6)
+    assert {"cafe", "park", "museum"} <= {place["category"] for place in shortlist}
 
 
 def test_same_museum_from_two_providers_is_not_shown_twice():

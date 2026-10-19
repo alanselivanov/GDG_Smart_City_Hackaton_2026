@@ -87,6 +87,7 @@ export interface Recommendation {
   open_status_reason: string
   why: string
   what_to_do: string
+  text_source: 'grounded_fallback' | 'llm_verified'
   missing_information: string[]
   evidence?: PoiFact[]
   requirement_status?: Partial<Record<Requirement, 'confirmed' | 'unknown'>>
@@ -96,6 +97,7 @@ export interface Recommendation {
   group_meeting_at?: string | null
   group_ends_at?: string | null
   participant_walking_minutes?: number[] | null
+  participant_walking_seconds?: number[] | null
   participant_interest_matches?: boolean[] | null
 }
 
@@ -120,6 +122,13 @@ export interface RecommendResponse {
     selection_scores?: Record<string, number>
     providers?: string[]
     participant_count?: number
+    interests?: Category[] | Category[][]
+    embedding_fallback_used?: boolean
+    routing_fallback_used?: boolean
+    routing_method?: 'osm_road_network' | 'geodesic_estimate'
+    poi_catalog_stale?: boolean
+    poi_catalog_age_hours?: number | null
+    llm_generated_count?: number
   }
   source: string
   source_license_url: string
@@ -131,4 +140,6 @@ export interface HealthResponse {
   status: 'ready' | 'awaiting_poi'
   poi_count: number
   last_refresh_error: string | null
+  poi_stale?: boolean
+  poi_age_hours?: number | null
 }

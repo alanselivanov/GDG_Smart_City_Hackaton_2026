@@ -14,10 +14,13 @@ Frontend dev URL: http://localhost:5173
 Backend docs: http://127.0.0.1:8000/docs
 
 Vite proxies /api to the local backend. Do not put LLM_API_KEY or 2GIS_API_KEY
-in frontend env variables. The backend needs a POI import and LLM_API_KEY for
-non-empty text queries. See the repository root .env.example for backend config.
+in frontend env variables. The backend needs a POI import; LLM and 2GIS keys
+enable their respective enhancements, while the recommendation pipeline can
+fall back to available catalog data. See the repository root .env.example for
+backend config.
 
-The MVP calls GET /health and POST /v1/recommendations. GET /v1/pois/search
+The MVP calls GET /health, POST /v1/recommendations and POST
+/v1/group/recommendations. GET /v1/pois/search
 returns 503 with a clear message when the POI cache is empty. The frontend
 does not currently use that endpoint.
 
@@ -32,10 +35,12 @@ For the demo, the frontend recognizes the Astana shorthand «возле Меги
 Mega Silk Way. Other ambiguous or unknown names still depend on the backend
 place resolver.
 
-Optional settings are max_travel_minutes, starts_at, and language. A scheduled
+Optional settings include max_travel_minutes, starts_at, language, category
+filters and features to verify. Group mode sends three to five participant
+starting points and their interests to /v1/group/recommendations. A scheduled
 start is entered in the browser's local time and sent as a timezone-aware UTC
-ISO timestamp. The frontend also recognizes explicit Russian "сегодня/завтра
-в HH:MM" in the query and sends that time as starts_at. The result displays
+ISO timestamp. When the start is named in the query, the backend interprets
+it and reports the effective starts_at. The result displays
 the effective time budget, start time and origin. A named start in the query
 takes priority over device geolocation; the geolocation button remains visible
 so the device position can still be shown separately on the map.
@@ -48,14 +53,18 @@ The built-in map uses React Leaflet with OpenStreetMap tiles. It displays the
 resolved origin and numbered POI markers from the existing recommendation
 response. After browser geolocation consent, it can also display the device
 position separately from a named starting place. Map tiles are loaded by the
-browser from OpenStreetMap. The backend currently returns walking time and
-distance but no route geometry, so the map does not draw a pedestrian route.
+browser from OpenStreetMap. The backend returns walking time and distance but
+no route geometry; selecting a place asks Valhalla for a pedestrian path and
+draws it when that separate route request succeeds.
 The "Во весь экран" button expands the map over the viewport; Escape closes it.
 
-Cards show the travel time, source and hours status. A reason preview appears
-only when it adds information beyond the category and distance already shown.
-"Подробнее" reveals the full backend wording, action
-suggestion, time estimate, uncertainty and source links.
+Cards show the complete backend "why" text once, alongside travel time, source
+and hours status. "Подробнее" reveals the action suggestion, time estimate,
+uncertainty and source links without repeating the explanation.
+The backend may rewrite "why" and "what_to_do" with an LLM. The frontend shows
+both fields verbatim and labels each card's text source in "Данные и ограничения".
+If pedestrian routing falls back to a distance estimate, walking values are
+marked approximate. Group cards show which stated participant interests match.
 The current recommendation API does not provide verified photo URLs. Cards
 therefore show no place images. No manually chosen or generated place media is
 included. 2GIS Places API can filter by photo availability but does not return

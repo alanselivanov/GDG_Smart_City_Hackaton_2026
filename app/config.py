@@ -17,9 +17,21 @@ def _bool(name: str, default: bool) -> bool:
 class Settings:
     database_path: Path = Path(os.getenv("DATABASE_PATH", "./data/astana.sqlite3"))
     overpass_url: str = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
-    overpass_user_agent: str = os.getenv("OVERPASS_USER_AGENT", "AstanaWalksHackathon/1.0 (contact: unset)")
+    overpass_fallback_urls: tuple[str, ...] = tuple(
+        value.strip() for value in os.getenv(
+            "OVERPASS_FALLBACK_URLS", "https://overpass.private.coffee/api/interpreter"
+        ).split(",") if value.strip()
+    )
+    overpass_user_agent: str = os.getenv(
+        "OVERPASS_USER_AGENT",
+        "AstanaWalksHackathon/1.0 (https://github.com/alanselivanov/GDG_Smart_City_Hackaton_2026)",
+    )
     poi_refresh_hours: int = int(os.getenv("POI_REFRESH_HOURS", "24"))
     auto_refresh: bool = _bool("AUTO_REFRESH", True)
+    max_poi_age_hours: int = int(os.getenv("MAX_POI_AGE_HOURS", "24"))
+    api_requests_per_minute: int = int(os.getenv("API_REQUESTS_PER_MINUTE", "30"))
+    api_requests_per_day: int = int(os.getenv("API_REQUESTS_PER_DAY", "500"))
+    max_concurrent_recommendations: int = int(os.getenv("MAX_CONCURRENT_RECOMMENDATIONS", "3"))
     admin_token: str = os.getenv("ADMIN_TOKEN", "")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
