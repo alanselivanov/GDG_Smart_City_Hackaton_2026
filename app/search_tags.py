@@ -74,6 +74,15 @@ def search_queries(query: str, tags: SearchTags) -> list[str]:
     if cuisine:
         return cuisine[:2]
     category = next((tag for tag in tags.tags if tag in CATEGORIES), None)
+    # "Eat nearby" includes cafes as well as restaurants. A single 2GIS text
+    # search can otherwise omit the closest suitable dining venues entirely.
+    lowered = query.casefold()
+    generic_meal = any(word in lowered for word in (
+        "поесть", "поем", "покушать", "завтрак", "обед", "ужин", "eat", "breakfast", "lunch", "dinner", "тамақ"
+    ))
+    explicitly_cafe = any(word in lowered for word in ("кафе", "кофейня", "cafe", "coffee shop"))
+    if category == "food" or (generic_meal and not explicitly_cafe):
+        return ["кафе", "ресторан"]
     return [CATEGORIES[category]] if category else [query]
 
 

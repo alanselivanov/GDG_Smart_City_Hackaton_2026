@@ -957,6 +957,10 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                                 for requirement in requirements) for item in scored):
         scored = [item for item in scored if all(item[1].requirement_status.get(requirement) == "confirmed"
                                                   for requirement in requirements)]
+    # For an explicit "closer" request, the route is the primary constraint.
+    # The AI may rank the nearby shortlist, but farther venues with richer
+    # catalog cards must not crowd nearby eligible cafes out of that shortlist.
+    nearby_first = proximity_requested(request.query) and not group
     # Greedy diversification only when the query allows several kinds of places.
     diversify = group_compromise or unusual or walking or len(desired) != 1
     chosen: list[Recommendation] = []
@@ -980,8 +984,8 @@ def rank(pois: list[dict], request: RecommendRequest | GroupRecommendRequest,
                    distance_m(poi["lat"], poi["lon"], prev["lat"], prev["lon"]) < 120
                    for prev in chosen_pois):
                 continue
-            adjusted = score
-            if diversify:
+            adjusted = (-rec.walking_seconds + score * 0.001 if nearby_first else score)
+            if diversify and not nearby_first:
                 category_penalty = (14 if group_compromise else 7 if short_stroll else
                                     6 if stroll else 4.5 if unusual else 2.5)
                 adjusted -= category_penalty * sum(poi["category"] == prev["category"] for prev in chosen_pois)

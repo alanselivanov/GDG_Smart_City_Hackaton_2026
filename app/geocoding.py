@@ -82,7 +82,12 @@ def mentioned_place(query: str) -> str | None:
             for tail in (_TAIL, _TIME_TAIL, _REQUEST_TAIL):
                 value = tail.split(value, 1)[0]
             value = value.strip(" \"'«»()")
-            if match.group(0).casefold().lstrip().startswith("около ") and _TIME_AFTER_AROUND.match(value):
+            matched_start = match.group(0).casefold().lstrip()
+            if matched_start.startswith("около ") and _TIME_AFTER_AROUND.match(value):
+                continue
+            if matched_start.startswith("at ") and re.match(
+                r"(?iu)^\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", value
+            ):
                 continue
             if not value or _GENERIC_PLACE.match(value):
                 continue

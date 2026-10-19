@@ -34,6 +34,7 @@ def test_time_after_place_is_not_part_of_its_name():
     assert mentioned_place("Хочу поесть возле Mega Silk Way в 9 утра") == "Mega Silk Way"
     assert mentioned_place("Хочу поесть возле Mega Silk Way вечером") == "Mega Silk Way"
     assert mentioned_place("Eat near Mega Silk Way at 9 am") == "Mega Silk Way"
+    assert mentioned_place("I want to eat nearby at 11 am") is None
     assert infer_start("Хочу погулять в течение часа", NOW) is None
 
 

@@ -118,6 +118,33 @@ class TwoGisNearbyTests(unittest.TestCase):
             self.assertEqual(response.status_code, 503)
             self.assertIn("2GIS_API_KEY", response.json()["detail"])
 
+    def test_dining_search_keeps_more_than_ten_nearby_cafes(self):
+        from app.models import TwoGisNearbyRequest
+        from app.twogis import nearby
+
+        requested_pages = []
+
+        def handler(request):
+            self.assertEqual(request.url.params["q"], "кафе")
+            self.assertEqual(request.url.params["page_size"], "10")
+            page = int(request.url.params["page"])
+            requested_pages.append(page)
+            start = (page - 1) * 10
+            return httpx.Response(200, json={"meta": {"code": 200}, "result": {
+                "total": 15, "items": [{"id": str(i), "name": f"Cafe {i}",
+                    "point": {"lat": 51.09, "lon": 71.41}} for i in range(start, min(start + 10, 15))],
+            }})
+
+        real_client = httpx.AsyncClient
+        with patch("app.twogis.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(
+                transport=httpx.MockTransport(handler), **kwargs)):
+            result = asyncio.run(nearby(TwoGisNearbyRequest(
+                query="кафе", lat=51.09, lon=71.41),
+                replace(settings, twogis_api_key="test-key")))
+        self.assertEqual(len(result.recommendations), 15)
+        self.assertEqual(result.context_used["page_size"], 10)
+        self.assertEqual(requested_pages, [1, 2])
+
     def test_unnamed_playground_label_is_not_none(self):
         from app.models import TwoGisNearbyRequest
         from app.twogis import _poi

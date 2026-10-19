@@ -171,6 +171,23 @@ def test_plain_food_request_prefers_dining_venues_over_nightclubs():
     assert recommendations[1].what_to_do == "Выберите блюдо и перекусите здесь."
 
 
+def test_nearby_meal_keeps_closer_cafes_ahead_of_richer_restaurant():
+    places = [poi("one", "Bistro One", "cafe"), poi("two", "Cafe Two", "cafe"),
+              poi("three", "Bakery Three", "cafe"),
+              poi("far", "Detailed Restaurant", "food", attributes=[{
+                  "name": "Menu", "attributes": [{"name": "Стейки", "tag": "food_menu_steaks"}]
+              }])]
+    paths = {place["id"]: [(minutes * 75, minutes * 60)] for place, minutes in zip(
+        places, (2, 3, 4, 9))}
+    request = RecommendRequest(lat=51.1, lon=71.41,
+                               query="Я хочу поесть поближе в 11 утра", starts_at=DAY)
+    semantic = {"far": 1.0}
+    recommendations, _, _ = rank(places, request, paths, semantic)
+    assert [rec.poi.id for rec in recommendations] == ["one", "two", "three"]
+    ai_pool, _, _ = rank(places, request, paths, semantic, selection_limit=12)
+    assert [rec.poi.id for rec in ai_pool[:3]] == ["one", "two", "three"]
+
+
 def test_night_checks_listed_hours_and_keeps_unknown_venues():
     attribute = [{"name": "Awards", "attributes": [{"name": "Best bar", "tag": "awards_best_bar"}]}]
     confirmed = poi("open", "Open bar", "nightlife", hours="Mo 22:00-02:00", attributes=attribute)

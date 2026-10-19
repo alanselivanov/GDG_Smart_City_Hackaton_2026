@@ -41,8 +41,10 @@ def search_plan(query: str) -> tuple[str, int, str]:
     # Dining with children is a restaurant request, not a playground request.
     if any(word in text for word in ("детское меню", "детским меню", "kids menu", "балалар мәзір")):
         return "кафе", 1500, "cafe"
-    if any(word in text for word in ("коф", "кафе", "coffee", "cafe", "ресторан", "restaurant")):
+    if any(word in text for word in ("коф", "кафе", "coffee", "cafe")):
         return "кафе", 1500, "cafe"
+    if any(word in text for word in ("ресторан", "restaurant")):
+        return "ресторан", 3000, "food"
     if any(word in text for word in ("поесть", "поем", "поужин", "ужин", "обед", "завтрак", "позавтрак", "breakfast", "eat", "dinner", "lunch", "тамақ")):
         return "ресторан", 3000, "food"
     if any(word in text for word in ("прогул", "гулять", "парк", "walk", "park", "саябақ", "серуен")):
@@ -259,6 +261,8 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings, *, open_at: dat
     if not config.twogis_api_key:
         raise TwoGisError("2GIS_API_KEY is not configured")
     search_query, radius_m, intent = search_plan(request.query)
+    page_size = 10
+    max_pages = 2 if intent in {"food", "cafe"} else 1
     params = {
         "key": config.twogis_api_key,
         "q": search_query,
@@ -267,7 +271,7 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings, *, open_at: dat
         "radius": radius_m,
         "sort": "distance",
         "page": 1,
-        "page_size": 10,
+        "page_size": page_size,
         # The Astana catalog returns meta.code=404 with en_RU and rejects en_KZ.
         # Search in the working Russian catalog, then label raw facts honestly.
         # kk_KZ can omit nearby attractions that ru_KZ returns. Keep retrieval
@@ -293,28 +297,34 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings, *, open_at: dat
     total = None
     try:
         async with httpx.AsyncClient(timeout=config.twogis_timeout_seconds) as client:
-            for search_params in queries:
-                response = await client.get(PLACES_URL, params=search_params)
-                # The request URL contains the key: never expose response/request exceptions.
-                if response.status_code in (401, 403):
-                    raise TwoGisError("2GIS rejected the API key or field access")
-                if response.status_code == 429:
-                    raise TwoGisError("2GIS request quota or rate limit reached")
-                response.raise_for_status()
-                data = response.json()
-                if not isinstance(data, dict) or not isinstance(data.get("meta"), dict):
-                    raise TwoGisError("2GIS returned an invalid response")
-                code = data["meta"].get("code")
-                if code == 404:
-                    continue
-                if code != 200:
-                    raise TwoGisError(f"2GIS search failed (code {code})")
-                result = data.get("result")
-                if not isinstance(result, dict) or not isinstance(result.get("items"), list):
-                    raise TwoGisError("2GIS returned an invalid result list")
-                if search_params is params:
-                    total = result.get("total")
-                all_items.extend(item for item in result["items"][:10] if isinstance(item, dict))
+            for base_params in queries:
+                for page in range(1, max_pages + 1):
+                    search_params = {**base_params, "page": page}
+                    response = await client.get(PLACES_URL, params=search_params)
+                    # The request URL contains the key: never expose response/request exceptions.
+                    if response.status_code in (401, 403):
+                        raise TwoGisError("2GIS rejected the API key or field access")
+                    if response.status_code == 429:
+                        raise TwoGisError("2GIS request quota or rate limit reached")
+                    response.raise_for_status()
+                    data = response.json()
+                    if not isinstance(data, dict) or not isinstance(data.get("meta"), dict):
+                        raise TwoGisError("2GIS returned an invalid response")
+                    code = data["meta"].get("code")
+                    if code == 404:
+                        break
+                    if code != 200:
+                        raise TwoGisError(f"2GIS search failed (code {code})")
+                    result = data.get("result")
+                    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+                        raise TwoGisError("2GIS returned an invalid result list")
+                    found = result.get("total")
+                    if base_params is params:
+                        total = found
+                    items = [item for item in result["items"][:page_size] if isinstance(item, dict)]
+                    all_items.extend(items)
+                    if len(items) < page_size or isinstance(found, int) and page * page_size >= found:
+                        break
     except httpx.HTTPError as exc:
         raise TwoGisError(f"2GIS request failed: {type(exc).__name__}") from None
     except ValueError:
@@ -333,7 +343,7 @@ async def nearby(request: TwoGisNearbyRequest, config: Settings, *, open_at: dat
         context_used={
             "query": request.query, "search_query": search_query, "intent": intent,
             "origin": {"lat": request.lat, "lon": request.lon},
-            "radius_m": radius_m, "page": 1, "page_size": 10,
+            "radius_m": radius_m, "page": 1, "page_size": page_size,
             "object_type": params.get("type"),
             "rubric_id": params.get("rubric_id"),
             "region_id": params.get("region_id"),

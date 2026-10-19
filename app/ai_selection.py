@@ -11,7 +11,7 @@ import httpx
 from app.attributes import relevant_facts
 from app.config import Settings
 from app.models import GroupRecommendRequest, RecommendRequest, Recommendation
-from app.recommend import effective_max_travel, proximity_requested
+from app.recommend import STROLL_TERMS, effective_max_travel, proximity_requested
 
 
 PRIORITIES = ("walking_time", "request_fit", "confirmed_open", "catalog_features",
@@ -90,13 +90,33 @@ def _validated(parsed: object, pool: list[Recommendation], request: RecommendReq
     selected = ranked_ids[:len(selected)]
     if proximity_requested(request.query):
         by_id = {rec.poi.id: rec for rec in pool}
-        closest = min(pool, key=lambda rec: rec.walking_minutes)
-        top = by_id[selected[0]]
-        if (top.walking_minutes > closest.walking_minutes + 5
-                and top.poi.category == closest.poi.category
-                and not (top.poi.facts or top.poi.attribute_groups or top.poi.description)
-                and not any(value == "confirmed" for value in top.requirement_status.values())):
+        nearest = sorted(pool, key=lambda rec: (rec.walking_seconds, rec.distance_m))
+        # The model still decides within a small walking-time band. It cannot
+        # replace several much closer eligible venues with distant ones merely
+        # because their catalog cards are richer.
+        distance_ceiling = nearest[len(selected) - 1].walking_minutes + 2
+        if (by_id[selected[0]].walking_minutes > nearest[0].walking_minutes + 2
+                or any(by_id[identity].walking_minutes > distance_ceiling for identity in selected)):
             return None
+    if (not isinstance(request, GroupRecommendRequest) and request.time_budget_minutes >= 90
+            and not proximity_requested(request.query)
+            and any(term in request.query.casefold() for term in STROLL_TERMS)):
+        by_id = {rec.poi.id: rec for rec in pool}
+        destinations = [rec for rec in pool if rec.poi.category == "park"
+                        and 12 <= rec.walking_minutes <= min(45, request.time_budget_minutes // 3)
+                        and (rec.poi.facts or rec.poi.description)]
+        if destinations and not any(by_id[identity] in destinations for identity in selected):
+            # A long walk should include at least one reachable destination.
+            # The model scores the eligible destinations; the backend enforces
+            # coverage so three places beside the start cannot crowd them out.
+            destination = max(destinations, key=lambda rec: (
+                rec.open_status == "open", scores[rec.poi.id], -rec.walking_seconds
+            )).poi.id
+            other_ids = sorted(selected, key=lambda identity: (
+                bool(by_id[identity].poi.facts or by_id[identity].poi.description),
+                scores[identity], -by_id[identity].walking_seconds
+            ), reverse=True)
+            selected = [destination] + [identity for identity in other_ids if identity != destination][:len(selected) - 1]
     if isinstance(request, GroupRecommendRequest) and len(selected) > 1:
         by_id = {rec.poi.id: rec for rec in pool}
         if max(sum(rec.participant_interest_matches or []) for rec in pool) < (len(request.participants) + 1) // 2:
@@ -160,6 +180,11 @@ async def score_candidates(pool: list[Recommendation], request: RecommendRequest
             "If the user asks for something closer (e.g. 'поближе'), walking_time MUST be the first "
             "priority; favor the shortest feasible walk strongly over rating, menu variety, and "
             "number of catalog attributes. A much farther place needs a clear requested advantage. "
+            "For a walk lasting 90 minutes or more without a request to stay close, the walk itself "
+            "is part of the activity. Favor a substantial park or garden with verified features "
+            "when it fits the route and time budget. Do not choose three places within a few "
+            "minutes of the start merely because they are closest if a richer walking destination "
+            "is available. Unknown hours are uncertain, not proof of closure or access. "
             "If the user requests a confirmed feature, prefer confirmed matches; unknown is not yes. "
             "An unknown opening status is uncertain, never confirmed open; when eating now, "
             "prefer known-open places when other suitability is comparable. Ratings are weak evidence. "

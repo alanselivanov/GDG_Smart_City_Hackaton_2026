@@ -91,6 +91,39 @@ def test_ai_rejects_invented_place_and_ignoring_proximity():
         assert decision is None
 
 
+def test_ai_cannot_replace_three_nearby_dining_places_with_farther_one():
+    pool = [_rec("near-1", "Near One", 2), _rec("near-2", "Near Two", 3),
+            _rec("near-3", "Near Three", 4), _rec("far", "Far", 9)]
+    pool[1].poi.category = "cafe"
+    request = RecommendRequest(query="Хочу поесть поближе", lat=51.1, lon=71.4)
+    scores = {"near-1": 80, "near-2": 70, "near-3": 60, "far": 95}
+    assert _validated({"priorities": ["walking_time", "request_fit"], "scores": scores,
+                       "selected_ids": ["far", "near-1", "near-2"]}, pool, request) is None
+
+
+def test_long_stroll_includes_a_substantial_park_instead_of_an_undocumented_alley():
+    expo = _rec("expo", "Expo Park", 4)
+    expo.poi.category = "park"
+    expo.poi.description = "Fountains and pedestrian spaces"
+    sphere = _rec("sphere", "Sphere", 4)
+    sphere.poi.category = "landmark"
+    sphere.poi.description = "Distinctive sphere building"
+    alley = _rec("alley", "Alley", 4)
+    alley.poi.category = "park"
+    garden = _rec("garden", "Botanical Garden", 21)
+    garden.poi.category = "park"
+    garden.poi.description = "Themed flower beds and walking paths"
+    garden.open_status = "unknown"
+    pool = [expo, sphere, garden, alley]
+    request = RecommendRequest(query="Хочу погулять 2 часа пешком", lat=51.1, lon=71.4,
+                               time_budget_minutes=120)
+    result = _validated({"priorities": ["request_fit", "walking_time"],
+                         "scores": {"expo": 95, "sphere": 90, "alley": 85, "garden": 80},
+                         "selected_ids": ["expo", "sphere", "alley"]}, pool, request)
+    assert result is not None
+    assert result[2] == ["garden", "expo", "sphere"]
+
+
 def test_ai_retries_inconsistent_scores_before_rules_fallback():
     near, far = _rec("osm/near", "Near", 2), _rec("osm/far", "Far", 10)
     request = RecommendRequest(query="Хочу поесть поближе", lat=51.1, lon=71.4)

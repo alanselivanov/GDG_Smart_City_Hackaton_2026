@@ -6,7 +6,7 @@ from unittest.mock import patch
 import httpx
 
 from app.config import settings
-from app.search_tags import cuisine_confirmed, plan_search, search_queries
+from app.search_tags import SearchTags, cuisine_confirmed, plan_search, search_queries
 from app.twogis import search_plan
 
 
@@ -43,6 +43,15 @@ def test_missing_model_tag_cannot_discard_explicit_cuisine():
                                        replace(settings, llm_api_key="test-key")))
     assert "cuisine:korean" in tags.tags
     assert "cuisine:italian" not in tags.tags
+
+
+def test_generic_meal_search_covers_cafes_and_restaurants():
+    query = "Я хочу поесть поближе в 11 утра"
+    assert search_queries(query, SearchTags(("food", "nearby"), "ai_tags")) == ["кафе", "ресторан"]
+    assert search_queries(query, SearchTags(("cafe", "nearby"), "ai_tags")) == ["кафе", "ресторан"]
+    assert search_queries(query, SearchTags((), "rules_fallback")) == ["кафе", "ресторан"]
+    assert search_plan("кафе") == ("кафе", 1500, "cafe")
+    assert search_plan("ресторан") == ("ресторан", 3000, "food")
 
 
 def test_cuisine_needs_a_catalog_fact():
