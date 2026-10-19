@@ -12,29 +12,48 @@ type GroupDraft = { lat: number | null; lon: number | null; interest: Category |
 const newGroupMember = (): GroupDraft => ({ lat: null, lon: null, interest: '' })
 const emptyGroup: GroupDraft[] = []
 const categoryOptions = Object.keys(resultCopy.ru.categories) as Category[]
+function groupInterestFlags(interests: Category[] | Category[][] | undefined): boolean[] | undefined {
+  return interests && Array.isArray(interests[0])
+    ? (interests as Category[][]).map((categories) => categories.length > 0)
+    : undefined
+}
 const requirementLabels: Record<Language, Record<Requirement, string>> = {
   ru: { quiet: 'Тихо', sockets: 'Розетки', interactive: 'Интерактивно' },
   kk: { quiet: 'Тыныш', sockets: 'Розеткалар', interactive: 'Интерактивті' },
   en: { quiet: 'Quiet', sockets: 'Sockets', interactive: 'Interactive' },
 }
-const serviceErrorCopy: Record<Language, { offline: string; embedding: string }> = {
+const serviceErrorCopy: Record<Language, { offline: string; embedding: string; busy: string; limit: string; dailyLimit: string }> = {
   ru: {
     offline: 'Нет связи с сервером. Попробуйте ещё раз чуть позже.',
     embedding: 'Текстовый поиск сейчас недоступен. Попробуйте позже.',
+    busy: 'Сервис занят. Повторите поиск через несколько секунд.',
+    limit: 'Слишком много запросов. Повторите поиск позже.',
+    dailyLimit: 'Лимит запросов на сегодня исчерпан. Попробуйте завтра.',
   },
   kk: {
     offline: 'Сервермен байланыс жоқ. Сәл кейінірек қайталап көріңіз.',
     embedding: 'Мәтін бойынша іздеу қазір қолжетімсіз. Кейінірек көріңіз.',
+    busy: 'Қызмет бос емес. Бірнеше секундтан кейін қайта іздеңіз.',
+    limit: 'Сұраулар тым көп. Кейінірек қайталап көріңіз.',
+    dailyLimit: 'Бүгінгі сұраулар лимиті бітті. Ертең қайталап көріңіз.',
   },
   en: {
     offline: 'Cannot connect to the server. Please try again shortly.',
     embedding: 'Text search is unavailable right now. Please try again later.',
+    busy: 'The service is busy. Try again in a few seconds.',
+    limit: 'Too many requests. Please try again later.',
+    dailyLimit: 'Today’s request limit has been reached. Try again tomorrow.',
   },
 }
 
 function displayError(error: unknown, language: Language): string {
   const message = uiCopy[language].errors
   if (!(error instanceof ApiError)) return message.unknown
+  if (error.status === 429) {
+    if (error.message.includes('Daily external API budget')) return serviceErrorCopy[language].dailyLimit
+    if (error.message.includes('service is busy')) return serviceErrorCopy[language].busy
+    return serviceErrorCopy[language].limit
+  }
   if (error.message.includes('Embedding API failed')) return serviceErrorCopy[language].embedding
   if (error.status === 0 || error.message.includes('Backend недоступен')) return serviceErrorCopy[language].offline
   if (error.message.includes('Provide device lat/lon or mention a starting place')) {
@@ -52,24 +71,6 @@ function displayError(error: unknown, language: Language): string {
   return language === 'ru' ? error.message : message.unknown
 }
 
-function compactWhy(recommendation: Recommendation): string | null {
-  const routeSentence = /^«[^»]+» — [^.]+\.\s*/u
-  const concise = recommendation.why.replace(routeSentence, '').trim()
-  if (/^Атрибуты 2GIS:/iu.test(concise)) {
-    const parts = concise.replace(/^Атрибуты 2GIS:\s*/iu, '').split(';').map((item) => item.trim().replace(/\.$/, '')).filter(Boolean)
-    const useful = parts.filter((item) => !/^Премия(?:\s|$)/iu.test(item))
-    return (useful.length ? useful : parts).slice(0, 2).join(' · ')
-  }
-  return concise || null
-}
-
-function compactAction(text: string): string {
-  const first = text.split(/(?<=[.!?])\s+/u)[0].trim()
-  const purpose = first.match(/,\s*чтобы\s+([^.!?]+)[.!?]?$/iu)
-  const short = purpose ? purpose[1] : first
-  return short.charAt(0).toLocaleUpperCase() + short.slice(1)
-}
-
 function prepareQuery(text: string): string {
   // The local POI uses the Latin name; this common Russian spelling otherwise
   // sends the backend to an external geocoder that may be unavailable.
@@ -85,7 +86,7 @@ function hasNamedStartingPlace(text: string): boolean {
     || /(?:^|[\s,.;])(?:я\s+)?(?:сейчас\s+)?(?:нахожусь\s+)?(?:в|на|inside)\s+(?:здании|трц|тц|музее|парке)\s+[^\s,;.!?—–]+/iu.test(text)
 }
 
-function RecommendationCard({ recommendation, index, selected, language, onShowMap }: { recommendation: Recommendation; index: number; selected: boolean; language: Language; onShowMap: () => void }) {
+function RecommendationCard({ recommendation, index, selected, language, routeEstimated, interestSpecified, onShowMap }: { recommendation: Recommendation; index: number; selected: boolean; language: Language; routeEstimated: boolean; interestSpecified?: boolean[]; onShowMap: () => void }) {
   const { poi } = recommendation
   const copy = resultCopy[language]
   const [showDetails, setShowDetails] = useState(false)
@@ -96,7 +97,6 @@ function RecommendationCard({ recommendation, index, selected, language, onShowM
   const cuisine = attributes.find((item) => /кухн|cuisine|асхан/iu.test(item))
   const price = attributes.find((item) => /^(?:чек|average check|орташа чек)/iu.test(item))
   const highlights = provider === '2GIS' ? [...new Set([cuisine, price, ...attributes.filter((item) => !/^(?:Премия|Завтрак)(?:\s|$)/iu.test(item))].filter((item): item is string => Boolean(item)))].slice(0, 2) : []
-  const preview = compactWhy(recommendation) || recommendation.why.trim()
   const facts = [...new Map([...(poi.facts || []), ...(recommendation.evidence || [])].map((fact) => [fact.key, fact])).values()]
   const requirements = Object.entries(recommendation.requirement_status || {}) as [Requirement, 'confirmed' | 'unknown'][]
 
@@ -108,12 +108,12 @@ function RecommendationCard({ recommendation, index, selected, language, onShowM
           <div className="card-copy">
             <div className="card-topline"><span className="category-badge">{copy.categories[poi.category]}</span><span className="card-provider">{provider === '2GIS' ? '2GIS' : 'OSM'}</span></div>
             <h3>{poi.name}</h3>
-            {preview && <p className="card-reason"><strong>{copy.why}</strong> {preview}</p>}
+            <p className="card-reason"><strong>{copy.why}</strong> {recommendation.why}</p>
             {highlights.length > 0 && <div className="card-highlights">{highlights.map((item) => <span key={item}>{item}</span>)}</div>}
           </div>
           <div className="card-aside">
-            <strong className="card-walk">{recommendation.participant_walking_minutes ? copy.groupWalk(recommendation.walking_minutes) : copy.walk(recommendation.walking_minutes)}</strong>
-            <span className="card-distance">{recommendation.participant_walking_minutes ? copy.groupFromStart(formatDistance(recommendation.distance_m, language)) : copy.fromStart(formatDistance(recommendation.distance_m, language))}</span>
+            <strong className="card-walk">{routeEstimated ? '≈ ' : ''}{recommendation.participant_walking_minutes ? copy.groupWalk(recommendation.walking_minutes) : copy.walk(recommendation.walking_minutes)}</strong>
+            <span className="card-distance">{routeEstimated ? '≈ ' : ''}{recommendation.participant_walking_minutes ? copy.groupFromStart(formatDistance(recommendation.distance_m, language)) : copy.fromStart(formatDistance(recommendation.distance_m, language))}</span>
             <div className="card-status"><span className={recommendation.open_status === 'open' ? 'hours-known' : recommendation.open_status === 'closed' ? 'hours-closed' : 'hours-unknown'}>
               {recommendation.open_status === 'open' ? copy.open : recommendation.open_status === 'closed' ? copy.closed : copy.unknown}
             </span>{provider === '2GIS' && poi.rating != null && poi.rating > 0 && <span>★ {poi.rating.toFixed(1).replace('.', ',')}{poi.review_count ? ` · ${new Intl.NumberFormat({ ru: 'ru-RU', kk: 'kk-KZ', en: 'en-US' }[language]).format(poi.review_count)}` : ''}</span>}</div>
@@ -125,17 +125,17 @@ function RecommendationCard({ recommendation, index, selected, language, onShowM
             <div className="visit-estimate-heading"><span>{copy.visitTitle}</span><div className="visit-estimate-total"><span>{copy.visitTotal}</span><strong>≈ {formatBudget(recommendation.walking_minutes + recommendation.visit_minutes, language)}</strong></div></div>
             <div className="time-meter" aria-hidden="true"><span style={{ flex: recommendation.walking_minutes }} /><span style={{ flex: recommendation.visit_minutes }} /></div>
             <div className="visit-estimate-breakdown">
-              <div className="visit-estimate-part"><span>{copy.visitWalk}</span><strong>{formatBudget(recommendation.walking_minutes, language)}</strong></div>
+              <div className="visit-estimate-part"><span>{copy.visitWalk}</span><strong>{routeEstimated ? '≈ ' : ''}{formatBudget(recommendation.walking_minutes, language)}</strong></div>
               <span className="visit-estimate-plus" aria-hidden="true">+</span>
               <div className="visit-estimate-part"><span>{copy.visitPlace}</span><strong>≈ {formatBudget(recommendation.visit_minutes, language)}</strong></div>
             </div>
             <p className="visit-estimate-note">{copy.visitNote}</p>
           </section>
-          {recommendation.what_to_do !== preview && <div className="place-plan"><strong>{copy.action}</strong><p>{compactAction(recommendation.what_to_do)}</p></div>}
-          {recommendation.participant_walking_minutes && <div className="group-result"><strong>{copy.groupWalks}</strong><div>{recommendation.participant_walking_minutes.map((minutes, memberIndex) => <span key={memberIndex}>{memberIndex + 1} · {formatBudget(minutes, language)}</span>)}</div>{recommendation.group_meeting_at && <p>{copy.groupMeet} {formatStart(recommendation.group_meeting_at, language)}</p>}</div>}
+          {recommendation.what_to_do && <div className="place-plan"><strong>{copy.action}</strong><p>{recommendation.what_to_do}</p></div>}
+          {recommendation.participant_walking_minutes && <div className="group-result"><strong>{copy.groupWalks}</strong><div>{recommendation.participant_walking_minutes.map((minutes, memberIndex) => <span key={memberIndex}>{memberIndex + 1} · {routeEstimated ? '≈ ' : ''}{formatBudget(minutes, language)}{interestSpecified?.[memberIndex] && recommendation.participant_interest_matches && ` · ${recommendation.participant_interest_matches[memberIndex] ? copy.interestMatched : copy.interestNotMatched}`}</span>)}</div>{recommendation.group_meeting_at && <p>{copy.groupMeet} {formatStart(recommendation.group_meeting_at, language)}</p>}</div>}
           {recommendation.airport_transfer_minutes != null && <div className="flight-result"><strong>{copy.airportTransfer}</strong><span>≈ {formatBudget(recommendation.airport_transfer_minutes, language)}</span>{recommendation.latest_leave_for_airport_at && <span>{copy.leaveAirportBy} {formatStart(recommendation.latest_leave_for_airport_at, language)}</span>}</div>}
           <details className="place-data"><summary>{copy.placeData}</summary><div className="place-data-content">
-            <p><strong>{copy.why}</strong> {recommendation.why}</p>
+            <p>{copy.textSource[recommendation.text_source]}</p>
             {poi.name_is_generic && <p>{copy.genericName}</p>}
             {recommendation.missing_information.length > 0 && <section><strong>{copy.missing}</strong><ul>{recommendation.missing_information.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}</ul></section>}
             {requirements.length > 0 && <section><strong>{copy.requirements}</strong><div className="data-chips">{requirements.map(([requirement, status]) => <span key={requirement} className={status === 'confirmed' ? 'confirmed' : 'uncertain'}>{requirementLabels[language][requirement]} · {status === 'confirmed' ? copy.confirmed : copy.unconfirmed}</span>)}</div></section>}
@@ -176,6 +176,14 @@ function App() {
   const [selectedPoiId, setSelectedPoiId] = useState<string | null>(null)
   const activeRequest = useRef<AbortController | null>(null)
 
+  function invalidateResults() {
+    activeRequest.current?.abort()
+    setLoading(false)
+    setResult(null)
+    setError(null)
+    setSelectedPoiId(null)
+  }
+
   useEffect(() => {
     const controller = new AbortController()
     getHealth(controller.signal).then(setHealth).catch(() => { if (!controller.signal.aborted) setHealthError(true) })
@@ -210,10 +218,12 @@ function App() {
         setLocationPending(false)
         const { latitude: lat, longitude: lon, accuracy } = coords
         if (lat < 50.9 || lat > 51.4 || lon < 71 || lon > 71.9) {
+          invalidateResults()
           setCoordinates(null)
           setLocationError(uiCopy[language].errors.outsideCity)
           return
         }
+        invalidateResults()
         setCoordinates({ lat, lon, accuracy })
         if (groupMode) setGroupParticipants((members) => members.map((member, index) => index === 0 ? { ...member, lat, lon } : member))
       },
@@ -333,6 +343,7 @@ function App() {
 
   function setGroupLocation(index: number, lat: number, lon: number) {
     if (lat < 50.9 || lat > 51.4 || lon < 71 || lon > 71.9) { setError(uiCopy[language].errors.groupOutside); return }
+    invalidateResults()
     setGroupParticipants((members) => members.map((member, memberIndex) => memberIndex === index ? { ...member, lat, lon } : member))
     const next = groupParticipants.findIndex((member, memberIndex) => memberIndex !== index && member.lat == null)
     setActiveGroupParticipant(next >= 0 ? next : null)
@@ -360,7 +371,7 @@ function App() {
               </label>
               <div className="quick-actions"><button type="button" className="example-button" onClick={() => setQuery(ui.exampleQuery)}>{ui.example}</button><button type="button" className="secondary-button" onClick={useDeviceLocation} disabled={locationPending}>{locationPending ? ui.locating : coordinates ? ui.refreshLocation : ui.myLocation}</button></div>
               {languageNotice && <p className="location-status" role="status">{ui.languageChanged}</p>}
-              {coordinates && <p className="location-status">{groupMode ? ui.locationGroup : namedStart ? ui.locationNamed : ui.locationFound} <button type="button" onClick={() => { setCoordinates(null); setLocationError(null); setResult(null); setSelectedPoiId(null); if (groupMode) setGroupParticipants((members) => members.map((member, index) => index === 0 ? { ...member, lat: null, lon: null } : member)) }}>{ui.disconnect}</button></p>}
+              {coordinates && <p className="location-status">{groupMode ? ui.locationGroup : namedStart ? ui.locationNamed : ui.locationFound} <button type="button" onClick={() => { invalidateResults(); setCoordinates(null); setLocationError(null); if (groupMode) setGroupParticipants((members) => members.map((member, index) => index === 0 ? { ...member, lat: null, lon: null } : member)) }}>{ui.disconnect}</button></p>}
               {locationError && <p className="field-error" role="alert">{locationError}</p>}
               {groupMode && <div className="group-planner">
                 <div className="group-title"><strong>{ui.groupStarts}</strong><span>{ui.groupHint}</span></div>
@@ -369,12 +380,12 @@ function App() {
                   <div className="group-member-info"><strong>{index === 0 ? ui.you : ui.participant(index + 1)}</strong><span>{member.lat == null ? ui.pointMissing : ui.pointChosen}</span></div>
                   <button type="button" className={activeGroupParticipant === index ? 'group-pick active' : 'group-pick'} onClick={() => { setActiveGroupParticipant(index); document.getElementById('map-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }}>{member.lat == null ? ui.onMap : ui.edit}</button>
                   <label className="input-label group-interest">{ui.interest}
-                    <select value={member.interest} onChange={(event) => setGroupParticipants((members) => members.map((item, memberIndex) => memberIndex === index ? { ...item, interest: event.target.value as Category | '' } : item))}>
+                    <select value={member.interest} onChange={(event) => { invalidateResults(); setGroupParticipants((members) => members.map((item, memberIndex) => memberIndex === index ? { ...item, interest: event.target.value as Category | '' } : item)) }}>
                       <option value="">{ui.any}</option>{categoryOptions.map((category) => <option key={category} value={category}>{resultCopy[language].categories[category]}</option>)}
                     </select>
                   </label>
                 </div>)}
-                <div className="group-controls"><button type="button" disabled={groupParticipants.length >= 5} onClick={() => setGroupParticipants((members) => [...members, newGroupMember()])}>{ui.addParticipant}</button>{groupParticipants.length > 3 && <button type="button" onClick={() => { setGroupParticipants((members) => members.slice(0, -1)); setActiveGroupParticipant(null) }}>{ui.removeParticipant}</button>}</div>
+                <div className="group-controls"><button type="button" disabled={groupParticipants.length >= 5} onClick={() => { invalidateResults(); setGroupParticipants((members) => [...members, newGroupMember()]) }}>{ui.addParticipant}</button>{groupParticipants.length > 3 && <button type="button" onClick={() => { invalidateResults(); setGroupParticipants((members) => members.slice(0, -1)); setActiveGroupParticipant(null) }}>{ui.removeParticipant}</button>}</div>
               </div>}
               <details className="advanced-options">
                 <summary>{ui.refine}</summary>
@@ -429,7 +440,8 @@ function App() {
             {!loading && result && (result.recommendations.length > 0 ?
               <div className="results-content">
                 <div className="results-summary"><strong>{copy.placeCount(result.recommendations.length)}</strong><span>{result.context_used.participant_count && result.context_used.participant_count > 1 ? copy.groupCount(result.context_used.participant_count) : originName || copy.deviceOrigin}</span><span>{result.context_used.time_budget_minutes != null ? formatBudget(result.context_used.time_budget_minutes, displayLanguage) : copy.timeFromQuery}</span>{result.context_used.starts_at && <span>{formatStart(result.context_used.starts_at, displayLanguage)}</span>}</div>
-                <div className="recommendation-list">{result.recommendations.map((recommendation, index) => <RecommendationCard key={recommendation.poi.id} recommendation={recommendation} index={index} selected={selectedPoiId === recommendation.poi.id} language={displayLanguage} onShowMap={() => showOnMap(recommendation.poi.id)} />)}</div>
+                {(result.context_used.routing_fallback_used || (result.context_used.poi_catalog_stale && result.recommendations.some((item) => !item.poi.id.startsWith('2gis/')))) && <div className="result-cautions" role="status">{result.context_used.routing_fallback_used && <span>{copy.approximateRoute}</span>}{result.context_used.poi_catalog_stale && result.recommendations.some((item) => !item.poi.id.startsWith('2gis/')) && <span>{copy.staleCatalog}</span>}</div>}
+                <div className="recommendation-list">{result.recommendations.map((recommendation, index) => <RecommendationCard key={recommendation.poi.id} recommendation={recommendation} index={index} selected={selectedPoiId === recommendation.poi.id} language={displayLanguage} routeEstimated={result.context_used.routing_fallback_used === true} interestSpecified={groupInterestFlags(result.context_used.interests)} onShowMap={() => showOnMap(recommendation.poi.id)} />)}</div>
                 <details className="result-details"><summary>{copy.selectionDetails}</summary><div>
                   <p>{copy.selectedFor(result.context_used.time_budget_minutes != null ? formatBudget(result.context_used.time_budget_minutes, displayLanguage) : copy.timeFromQuery)}{result.context_used.max_travel_minutes ? ` · ${copy.travelLimit(result.context_used.max_travel_minutes)}` : ''}{result.context_used.starts_at ? ` · ${copy.startAt(formatStart(result.context_used.starts_at, displayLanguage))}` : ''}.</p>
                   {result.notices.map((notice, index) => <p key={index}>{notice}</p>)}
